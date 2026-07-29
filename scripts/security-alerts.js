@@ -1,9 +1,12 @@
 import { fileURLToPath } from 'node:url';
-import { createSecurityAlertDispatcherFromEnvironment } from '../src/security/securityAlertDispatcher.js';
+import { createSecurityAlertRuntimeFromEnvironment } from '../src/security/securityAlertRuntime.js';
 
 export async function runSecurityAlertCommand(args = process.argv.slice(2), env = process.env) {
   const [command = 'status', value] = args;
-  const dispatcher = createSecurityAlertDispatcherFromEnvironment(env);
+  const dispatcher = createSecurityAlertRuntimeFromEnvironment({
+    ...env,
+    WORKFORCE_AUDIT_SECURITY_ALERT_AUTO_START: 'false'
+  });
   try {
     if (command === 'status') return dispatcher.health();
     if (command === 'dispatch') {
@@ -36,7 +39,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   runSecurityAlertCommand()
     .then((result) => console.log(JSON.stringify(result, null, 2)))
     .catch((error) => {
-      console.error(JSON.stringify({ success: false, code: error.code ?? 'SECURITY_ALERT_COMMAND_FAILED', error: error.message }));
+      console.error(JSON.stringify({
+        success: false,
+        code: error.code ?? 'SECURITY_ALERT_COMMAND_FAILED',
+        error: error.message
+      }));
       process.exitCode = 1;
     });
 }
