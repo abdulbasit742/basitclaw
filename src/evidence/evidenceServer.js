@@ -13,6 +13,7 @@ import { OidcUnavailableError } from '../security/oidcAuthenticator.js';
 import { createAdaptiveRateLimiterFromEnvironment } from '../security/rateLimiter.js';
 import { RateLimitStoreError } from '../security/sharedRateLimiter.js';
 import { createEvidenceHandler } from './evidenceHandler.js';
+import { publicEvidenceHealth } from './evidenceHealthView.js';
 import {
   EvidenceConflictError,
   EvidenceIntegrityError,
@@ -42,26 +43,39 @@ export function createEvidenceAwareApp({
   if (typeof baseHandler !== 'function') throw new TypeError('The federated application must expose a request handler.');
 
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    if (req.method === 'GET' && url.pathname === '/health') {
-      const requestId = randomUUID();
-      const health = evidenceRegistry.health();
-      if (health.required && health.status !== 'ready') {
-        return sendJson(res, 503, {
-          success: false,
-          data: { status: 'degraded', evidence: publicHealth(health) },
-          code: 'EVIDENCE_STORE_UNAVAILABLE',
-          meta: { requestId }
-        }, requestId, { 'retry-after': '30' });
+    const fallbackRequestId = randomUUID();
+    try {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      if (req.method === 'GET' && url.pathname === '/health') {
+        const health = evidenceRegistry.health();
+        if (health.required && health.status !== 'ready') {
+          return sendJson(res, 503, {
+            success: false,
+            data: { status: 'degraded', evidence: publicEvidenceHealth(health) },
+            code: 'EVIDENCE_STORE_UNAVAILABLE',
+            meta: { requestId: fallbackRequestId }
+          }, fallbackRequestId, { 'retry-after': '30' });
+        }
+        return await baseHandler(req, res);
       }
-      return baseHandler(req, res);
-    }
 
-    if (evidenceHandler.matches(url.pathname)) return handleEvidenceRequest(req, res, url);
-    if (req.method === 'POST' && url.pathname === '/api/workforce-audit/findings' && evidenceRegistry.enabled) {
-      return validateFindingEvidence(req, res);
+      if (evidenceHandler.matches(url.pathname)) return await handleEvidenceRequest(req, res, url);
+      if (req.method === 'POST' && url.pathname === '/api/workforce-audit/findings' && evidenceRegistry.enabled) {
+        return await validateFindingEvidence(req, res);
+      }
+      return await baseHandler(req, res);
+    } catch (error) {
+      console.error('Unhandled evidence server error', { requestId: fallbackRequestId, error });
+      if (!res.headersSent) {
+        return sendJson(res, 500, {
+          success: false,
+          error: 'Internal server error.',
+          code: 'INTERNAL_ERROR',
+          meta: { requestId: fallbackRequestId }
+        }, fallbackRequestId);
+      }
+      res.destroy(error);
     }
-    return baseHandler(req, res);
   });
 
   async function handleEvidenceRequest(req, res, url) {
@@ -117,7 +131,7 @@ export function createEvidenceAwareApp({
       principal = await authenticationGateway.authenticate(req);
       authenticationGateway.authorise(principal, 'finding:write');
     } catch {
-      return baseHandler(req, res);
+      return await baseHandler(req, res);
     }
     const requestId = randomUUID();
     let guard = null;
@@ -125,7 +139,7 @@ export function createEvidenceAwareApp({
       const bodyBuffer = await readBody(req, 1_000_000);
       let input;
       try { input = JSON.parse(bodyBuffer.toString('utf8') || '{}'); }
-      catch { return forwardBuffered(req, res, bodyBuffer); }
+      catch { return await forwardBuffered(req, res, bodyBuffer); }
       guard = referenceMutex?.acquire(`evidence:${principal.tenantId}`) ?? null;
       guard?.assertOwned();
       evidenceRegistry.assertUsableReferences(principal.tenantId, input.evidenceRefs);
@@ -201,8 +215,7 @@ export function createEvidenceAwareApp({
 export function prepareEvidenceLifecycle({ app } = {}) {
   const health = app?.evidenceRegistry?.health?.() ?? { status: 'disabled', enabled: false, required: false };
   if (health.required && health.status !== 'ready') {
-    const error = new EvidenceStoreError('The required evidence lifecycle is not ready.', { health: publicHealth(health) });
-    throw error;
+    throw new EvidenceStoreError('The required evidence lifecycle is not ready.', { health: publicEvidenceHealth(health) });
   }
   return health;
 }
@@ -211,9 +224,9 @@ function createEvidenceReferenceMutex(registry, env) {
   if (!registry?.enabled || !registry.directory) return null;
   return createFileMutex({
     directory: `${registry.directory}/.locks`,
-    leaseMs: integer(env.WORKFORCE_AUDIT_EVIDENCE_REFERENCE_LEASE_MS ?? 60_000, 'WORKFORCE_AUDIT_EVIDENCE_REFERENCE_LEASE_MS', 1_000, 300_000),
-    acquireTimeoutMs: integer(env.WORKFORCE_AUDIT_EVIDENCE_REFERENCE_ACQUIRE_TIMEOUT_MS ?? 2_000, 'WORKFORCE_AUDIT_EVIDENCE_REFERENCE_ACQUIRE_TIMEOUT_MS', 0, 60_000),
-    retryMs: integer(env.WORKFORCE_AUDIT_EVIDENCE_REFERENCE_RETRY_MS ?? 10, 'WORKFORCE_AUDIT_EVIDENCE_REFERENCE_RETRY_MS', 1, 1_000)
+    leaseMs: integer(envValue(env.WORKFORCE_AUDIT_EVIDENCE_REFERENCE_LEASE_MS) ?? 60_000, 'WORKFORCE_AUDIT_EVIDENCE_REFERENCE_LEASE_MS', 1_000, 300_000),
+    acquireTimeoutMs: integer(envValue(env.WORKFORCE_AUDIT_EVIDENCE_REFERENCE_ACQUIRE_TIMEOUT_MS) ?? 2_000, 'WORKFORCE_AUDIT_EVIDENCE_REFERENCE_ACQUIRE_TIMEOUT_MS', 0, 60_000),
+    retryMs: integer(envValue(env.WORKFORCE_AUDIT_EVIDENCE_REFERENCE_RETRY_MS) ?? 10, 'WORKFORCE_AUDIT_EVIDENCE_REFERENCE_RETRY_MS', 1, 1_000)
   });
 }
 
@@ -222,7 +235,6 @@ function evidencePolicy(method, pathname) {
   if (/\/(legal-hold|release-hold|dispose|verify)$/.test(pathname)) return 'sensitive';
   return 'write';
 }
-
 async function readBody(req, maximumBytes) {
   const chunks = [];
   let size = 0;
@@ -233,16 +245,7 @@ async function readBody(req, maximumBytes) {
   }
   return Buffer.concat(chunks);
 }
-
-function publicHealth(value) {
-  if (!value || typeof value !== 'object') return value;
-  const clone = structuredClone(value);
-  delete clone.directory;
-  delete clone.primaryKeyId;
-  delete clone.configuredKeyIds;
-  if (clone.mutex) delete clone.mutex.directory;
-  return clone;
-}
+function envValue(value) { const clean = typeof value === 'string' ? value.trim() : value; return clean === '' || clean === undefined || clean === null ? undefined : clean; }
 function once(operation) { let completed = false; return () => { if (completed) return; completed = true; operation(); }; }
 function integer(value, field, minimum, maximum) { const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new TypeError(`${field} must be an integer from ${minimum} to ${maximum}.`); return parsed; }
 function applyRateDecision(res, limiter, decision) { const headers = typeof limiter.headers === 'function' ? limiter.headers(decision) : {}; for (const [name, value] of Object.entries(headers)) res.setHeader(name, value); }
