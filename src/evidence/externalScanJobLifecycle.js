@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { createFileMutex } from '../security/fileMutex.js';
 import {
   atomicWriteEvidenceJson,
@@ -10,7 +10,6 @@ import {
 } from './evidenceCrypto.js';
 import {
   EvidenceIntegrityError,
-  EvidenceStoreError,
   EvidenceValidationError
 } from './evidenceRegistry.js';
 import {
@@ -19,7 +18,7 @@ import {
 } from './externalScanJobOutbox.js';
 
 const RECORD_FORMAT = 'basitclaw-external-scan-job';
-const JOB_ID = /^SCNJOB-[a-f0-9]{32}$/;
+const ALL_STATES = ['pending', 'inflight', 'delivered', 'completed', 'dead-letter'];
 const ACTIVE_EXPIRY_STATES = ['pending', 'delivered'];
 
 export class ExternalScanClaimBudgetError extends EvidenceValidationError {
@@ -130,16 +129,17 @@ export function createExternalScanJobJanitor({
   const root = resolve(String(directory));
   const keyring = parseEvidenceKeyring(evidenceKeys, evidencePrimaryKeyId);
   const deadLimit = integer(deadLetterRetention, 'deadLetterRetention', 1, 100_000);
-  const deadDirectory = resolve(root, 'dead-letter');
-  for (const state of [...ACTIVE_EXPIRY_STATES, 'dead-letter']) mkdirSync(resolve(root, state), { recursive: true, mode: 0o700 });
+  const stateDirectories = Object.fromEntries(ALL_STATES.map((state) => [state, resolve(root, state)]));
+  for (const path of Object.values(stateDirectories)) mkdirSync(path, { recursive: true, mode: 0o700 });
   const lock = mutex ?? createFileMutex({ directory: resolve(root, '.locks'), now });
 
   function run() {
     return lock.withLock('external-scan-job-outbox', () => {
+      const reconciled = reconcileLocationsLocked();
       let expiredPending = 0;
       let expiredDelivered = 0;
       for (const state of ACTIVE_EXPIRY_STATES) {
-        const directoryPath = resolve(root, state);
+        const directoryPath = stateDirectories[state];
         for (const filename of jobNames(directoryPath)) {
           const source = resolve(directoryPath, filename);
           const jobId = filename.slice(0, -5);
@@ -155,8 +155,26 @@ export function createExternalScanJobJanitor({
         }
       }
       pruneDeadLetters();
-      return { expiredPending, expiredDelivered };
+      return { reconciled, expiredPending, expiredDelivered };
     });
+  }
+
+  function reconcileLocationsLocked() {
+    let reconciled = 0;
+    for (const directoryState of ALL_STATES) {
+      for (const filename of jobNames(stateDirectories[directoryState])) {
+        const source = resolve(stateDirectories[directoryState], filename);
+        const jobId = filename.slice(0, -5);
+        const record = readRecord(source, jobId);
+        if (record.state === directoryState) continue;
+        if (!ALL_STATES.includes(record.state)) throw new EvidenceIntegrityError('An external scan job has an unsupported state.', { jobId, state: record.state });
+        const target = resolve(stateDirectories[record.state], filename);
+        if (existsSync(target)) throw new EvidenceIntegrityError('An external scan job exists in multiple state directories.', { jobId });
+        renameSync(source, target);
+        reconciled += 1;
+      }
+    }
+    return reconciled;
   }
 
   function moveToDeadLetter(source, record, reasonCode) {
@@ -172,7 +190,7 @@ export function createExternalScanJobJanitor({
       package: null,
       result: { delivery: 'dead-letter', reasonCode }
     };
-    const target = resolve(deadDirectory, `${record.jobId}.json`);
+    const target = resolve(stateDirectories['dead-letter'], `${record.jobId}.json`);
     if (existsSync(target)) throw new EvidenceIntegrityError('The expired external scan job already exists in dead-letter storage.', { jobId: record.jobId });
     atomicWriteEvidenceJson(source, encryptEvidenceJson(next, keyring, recordAad(record.jobId)));
     renameSync(source, target);
@@ -190,8 +208,10 @@ export function createExternalScanJobJanitor({
   }
 
   function pruneDeadLetters() {
-    const names = jobNames(deadDirectory);
-    for (const filename of names.slice(0, Math.max(0, names.length - deadLimit))) rmSync(resolve(deadDirectory, filename), { force: true });
+    const names = jobNames(stateDirectories['dead-letter']);
+    for (const filename of names.slice(0, Math.max(0, names.length - deadLimit))) {
+      rmSync(resolve(stateDirectories['dead-letter'], filename), { force: true });
+    }
   }
 
   return Object.freeze({ run, directory: root, deadLetterRetention: deadLimit });
