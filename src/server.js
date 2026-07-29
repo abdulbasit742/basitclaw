@@ -2,6 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import {
+  BackupError,
+  BackupIntegrityError,
+  BackupNotFoundError,
+  RecoveryConflictError
+} from './services/workforceAuditRegistry.js';
 import { PersistenceError } from './persistence/encryptedSnapshotStore.js';
 import { AuthenticationError, AuthorizationError, createAccessController } from './security/accessControl.js';
 import { createWorkforceAuditRegistry } from './services/workforceAuditRegistry.js';
@@ -19,7 +25,7 @@ export function createApp({
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
         const persistence = registry.getPersistenceHealth();
-        const status = persistence.status === 'ready' ? 200 : 503;
+        const status = persistence.status === 'ready' && persistence.backups?.status === 'ready' ? 200 : 503;
         return sendJson(res, status, {
           success: status === 200,
           data: { status: status === 200 ? 'ok' : 'degraded', persistence },
@@ -85,6 +91,43 @@ export function createApp({
         accessController.authorise(principal, 'governance:read');
         return sendJson(res, 200, { success: true, data: registry.getPersistenceHealth(), meta }, requestId);
       }
+      if (req.method === 'GET' && url.pathname === '/api/workforce-audit/backups') {
+        accessController.authorise(principal, 'backup:read');
+        return sendJson(res, 200, { success: true, data: registry.listTenantBackups(principal.tenantId), meta }, requestId);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/workforce-audit/backups') {
+        accessController.authorise(principal, 'backup:write');
+        const input = await readJson(req);
+        const data = registry.createTenantBackup(principal.tenantId, {
+          actor: principal.subject,
+          reason: input.reason,
+          kind: 'manual'
+        });
+        return sendJson(res, 201, { success: true, data, meta }, requestId);
+      }
+      const backupVerifyMatch = url.pathname.match(/^\/api\/workforce-audit\/backups\/([^/]+)\/verify$/);
+      if (req.method === 'POST' && backupVerifyMatch) {
+        accessController.authorise(principal, 'backup:read');
+        const data = registry.verifyTenantBackup(principal.tenantId, decodeURIComponent(backupVerifyMatch[1]));
+        return sendJson(res, 200, { success: true, data, meta }, requestId);
+      }
+      const backupRestoreMatch = url.pathname.match(/^\/api\/workforce-audit\/backups\/([^/]+)\/restore$/);
+      if (req.method === 'POST' && backupRestoreMatch) {
+        accessController.authorise(principal, 'backup:restore');
+        const input = await readJson(req);
+        const data = registry.restoreTenantBackup(
+          principal.tenantId,
+          decodeURIComponent(backupRestoreMatch[1]),
+          {
+            actor: principal.subject,
+            reason: input.reason,
+            expectedHeadHash: input.expectedHeadHash,
+            confirmation: input.confirmation,
+            dryRun: input.dryRun !== false
+          }
+        );
+        return sendJson(res, 200, { success: true, data, meta }, requestId);
+      }
       if (req.method === 'POST' && url.pathname === '/api/workforce-audit/engagements') {
         accessController.authorise(principal, 'engagement:write');
         const data = service.createEngagement(await readJson(req), context);
@@ -114,8 +157,14 @@ export function createApp({
       if (error instanceof ValidationError) {
         return sendJson(res, 400, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
       }
-      if (error instanceof NotFoundError) {
-        return sendJson(res, 404, { success: false, error: error.message, code: error.code, meta: { requestId } }, requestId);
+      if (error instanceof BackupNotFoundError || error instanceof NotFoundError) {
+        return sendJson(res, 404, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
+      }
+      if (error instanceof BackupIntegrityError || error instanceof RecoveryConflictError) {
+        return sendJson(res, 409, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
+      }
+      if (error instanceof BackupError) {
+        return sendJson(res, 503, { success: false, error: 'The workforce-audit recovery operation is unavailable.', code: error.code, meta: { requestId } }, requestId);
       }
       if (error instanceof PersistenceError || error?.code === 'PERSISTENCE_UNAVAILABLE') {
         return sendJson(res, 503, {
