@@ -61,7 +61,11 @@ test('authentication gateway blocks protected permissions until a grant is activ
     entitlementRegistry: { enforce: (value) => value, tenantIds: () => [], health: () => ({ status: 'disabled', required: false }) },
     privilegedAccessRegistry: privilegedAccess
   });
-  assert.throws(() => gateway.authorise(requester, 'security:read'), (error) => error.code === 'PRIVILEGED_ACCESS_REQUIRED');
+  assert.throws(() => gateway.authorise(requester, 'security:read'), (error) => (
+    error.code === 'FORBIDDEN'
+      && error.details?.reason === 'PRIVILEGED_ACCESS_REQUIRED'
+      && error.details?.permission === 'security:read'
+  ));
   let request = privilegedAccess.requestAccess(requester, {
     permissions: ['security:read'], durationMinutes: 30,
     reason: 'Temporary access to investigate a high-severity security event.', ticketRef: 'SEC-101'
@@ -103,6 +107,14 @@ test('federated server pre-authorises protected routes and exposes management AP
     const denied = await fetch(`${origin}/api/workforce-audit/security-status`, { headers: { authorization: 'Bearer token' } });
     assert.equal(denied.status, 403);
     assert.equal((await denied.json()).code, 'PRIVILEGED_ACCESS_REQUIRED');
+
+    const invalid = await fetch(`${origin}/api/workforce-audit/privileged-access/requests`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+      body: JSON.stringify({ permissions: ['security:read'], durationMinutes: 'invalid' })
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal((await invalid.json()).code, 'PRIVILEGED_ACCESS_INPUT_INVALID');
 
     const created = await fetch(`${origin}/api/workforce-audit/privileged-access/requests`, {
       method: 'POST',
