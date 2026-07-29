@@ -89,17 +89,16 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
         const evidenceId = decodeURIComponent(screeningActionMatch[1]);
         const action = screeningActionMatch[2];
         if (action === 'events') {
-          if (req.method !== 'GET') return notFound(res, requestId, principal);
+          if (req.method !== 'GET' || typeof registry.screeningEvents !== 'function') return notFound(res, requestId, principal);
           authenticationGateway.authorise(principal, 'governance:read');
           const data = registry.screeningEvents(principal.tenantId, { evidenceId, limit: positiveInteger(url.searchParams.get('limit'), 100, 500) });
           return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId);
         }
-        if (req.method !== 'POST') return notFound(res, requestId, principal);
+        const operation = action === 'release' ? registry.releaseQuarantine : registry.rejectQuarantine;
+        if (req.method !== 'POST' || typeof operation !== 'function') return notFound(res, requestId, principal);
         authenticationGateway.authorise(principal, 'backup:restore');
         const input = await readJson(req, 64 * 1024);
-        const data = action === 'release'
-          ? registry.releaseQuarantine(principal.tenantId, evidenceId, input, { actor: principal.subject })
-          : registry.rejectQuarantine(principal.tenantId, evidenceId, input, { actor: principal.subject });
+        const data = operation.call(registry, principal.tenantId, evidenceId, input, { actor: principal.subject });
         record(securityTelemetry, event(
           action === 'release' ? 'evidence.quarantine_released' : 'evidence.quarantine_rejected',
           action === 'release' ? 'high' : 'critical', principal, req, requestId, data
@@ -109,6 +108,7 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
 
       const screeningMatch = url.pathname.match(SCREENING_ROUTE);
       if (req.method === 'GET' && screeningMatch) {
+        if (typeof registry.screeningReport !== 'function') return notFound(res, requestId, principal);
         authenticationGateway.authorise(principal, 'governance:read');
         const data = registry.screeningReport(principal.tenantId, decodeURIComponent(screeningMatch[1]), {
           version: optionalPositiveInteger(url.searchParams.get('version'))
