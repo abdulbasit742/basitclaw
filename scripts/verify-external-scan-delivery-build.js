@@ -28,16 +28,21 @@ await requireMarkers('src/evidence/externalScanJobOutbox.js', 'Sealed scanner jo
   'rsa-oaep-sha256+aes-256-gcm',
   'timingSafeEqual',
   'requestReplayProtected',
+  'encryptedRecords: true',
   'plaintextQueued: false',
   'completeFromAttestation',
-  'request-replays'
+  'request-replays',
+  'reconcileLocationsLocked',
+  'requeued: true'
 ]);
 await requireMarkers('src/evidence/externalScanEvidenceRegistry.js', 'Scanner job evidence composition', [
   'Only quarantined evidence versions can be queued',
   'queueExternalScanJob',
   'completeFromAttestation',
   'externalScanDelivery',
-  'external-scan-release-policy'
+  'external-scan-release-policy',
+  'requires enabled evidence screening',
+  'requires signed external scanner attestations'
 ]);
 await requireMarkers('src/evidence/externalScanJobGovernanceHandler.js', 'Scanner job governance API', [
   '/external-scan-jobs',
@@ -58,7 +63,9 @@ await requireMarkers('docs/external-scan-delivery.md', 'Scanner delivery runbook
   'RSA-OAEP-SHA-256',
   'AES-256-GCM',
   'never auto-releases',
-  'private key'
+  'private key',
+  'crash-interrupted',
+  'dead-letter job'
 ]);
 await requireMarkers('config/evidence-screening.production.env.example', 'Production scanner delivery configuration', [
   'WORKFORCE_AUDIT_EXTERNAL_SCAN_DELIVERY_MODE=pull',
