@@ -5,12 +5,17 @@ const SEVERITY_RANK = Object.freeze({ info: 0, warning: 1, high: 2, critical: 3 
 export function createSecurityAlertCodec({
   signingSecret,
   signingSecrets = null,
-  primarySigningKeyId = 'security-alert-v1',
+  primarySigningKeyId = null,
   minimumSeverity = 'high',
   includedTypes = []
 } = {}) {
-  const secrets = createSecrets({ signingSecret, signingSecrets, primarySigningKeyId });
-  const primaryKeyId = safeIdentifier(primarySigningKeyId, 'primarySigningKeyId');
+  const environmentSecrets = signingSecrets ? null : parseSigningKeyring(process.env.WORKFORCE_AUDIT_SECURITY_ALERT_SIGNING_SECRETS);
+  const effectiveSecrets = signingSecrets ?? environmentSecrets;
+  const effectivePrimary = primarySigningKeyId
+    ?? (effectiveSecrets ? process.env.WORKFORCE_AUDIT_SECURITY_ALERT_PRIMARY_SIGNING_KEY_ID : null)
+    ?? 'security-alert-v1';
+  const secrets = createSecrets({ signingSecret, signingSecrets: effectiveSecrets, primarySigningKeyId: effectivePrimary });
+  const primaryKeyId = safeIdentifier(effectivePrimary, 'primarySigningKeyId');
   if (!secrets.has(primaryKeyId)) throw new TypeError('Security alert primary signing key ID is not present in the keyring.');
   const minimum = normaliseSeverity(minimumSeverity);
   const typeSet = new Set(normaliseTypes(includedTypes));
@@ -69,13 +74,17 @@ export function createSecurityAlertCodec({
     includedTypes: [...typeSet],
     primaryKeyId,
     keyIds: [...secrets.keys()],
-    legacySingleKey: !signingSecrets,
+    legacySingleKey: !effectiveSecrets,
     shouldDeliver,
     payload,
     headers,
     verify,
     sign
   };
+}
+
+export function parseSecurityAlertSigningKeyring(value) {
+  return parseSigningKeyring(value);
 }
 
 export function backoffDelayMs({ deliveryId, attempt, baseDelayMs, maxDelayMs }) {
@@ -122,6 +131,18 @@ function createSecrets({ signingSecret, signingSecrets, primarySigningKeyId }) {
     output.set(safeKeyId, secret);
   }
   return output;
+}
+
+function parseSigningKeyring(value) {
+  if (value === undefined || value === null || value === '') return null;
+  let parsed;
+  try { parsed = typeof value === 'string' ? JSON.parse(value) : value; } catch {
+    throw new TypeError('WORKFORCE_AUDIT_SECURITY_ALERT_SIGNING_SECRETS must be a JSON object.');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.keys(parsed).length === 0) {
+    throw new TypeError('Security alert signing keyring must be a non-empty object.');
+  }
+  return parsed;
 }
 
 function signWith(secret, value) {
