@@ -68,6 +68,11 @@ test('quarantined evidence cannot be downloaded or referenced until exact releas
   }, { actor: 'admin.one' });
   assert.equal(released.status, 'active');
   assert.equal(registry.readContent('tenant-a', item.evidenceId).content.toString(), secret);
+  const report = registry.screeningReport('tenant-a', item.evidenceId);
+  assert.equal(report.decision, 'quarantine');
+  assert.equal(report.accessDecision, 'clean');
+  assert.equal(report.reviewAction, 'released');
+  assert.equal(report.contentSha256, released.versions.at(-1).sha256);
   assert.equal(registry.verify('tenant-a', item.evidenceId).screening.valid, true);
 });
 
@@ -82,6 +87,10 @@ test('rejected versions remain inaccessible but a later clean version can recove
     reason: 'Active script content is not permitted as audit evidence'
   }, { actor: 'admin.one' });
   assert.equal(rejected.status, 'rejected');
+  const rejectedReport = registry.screeningReport('tenant-a', item.evidenceId);
+  assert.equal(rejectedReport.decision, 'quarantine');
+  assert.equal(rejectedReport.accessDecision, 'rejected');
+  assert.equal(rejectedReport.reviewAction, 'rejected');
   assert.throws(() => registry.readContent('tenant-a', item.evidenceId), EvidenceQuarantinedError);
 
   const remediated = registry.addVersion('tenant-a', item.evidenceId, {
