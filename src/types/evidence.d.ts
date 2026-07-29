@@ -14,8 +14,11 @@ export interface EvidenceScreeningSummary {
   engineVersion: string;
   mode: 'disabled' | 'observe' | 'enforce';
   decision: EvidenceScreeningDecision;
+  accessDecision: EvidenceScreeningDecision;
   wouldQuarantine: boolean;
   scannedAt: string;
+  contentSha256: string;
+  sizeBytes: number;
   version: number;
   findings: EvidenceScreeningFinding[];
   reviewedAt: string | null;
