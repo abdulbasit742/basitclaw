@@ -1,4 +1,4 @@
-import { scryptSync, timingSafeEqual } from 'node:crypto';
+import { scrypt, timingSafeEqual } from 'node:crypto';
 
 const STATUSES = new Set(['active', 'retiring', 'revoked']);
 const SCOPES = new Set(['scim:read', 'scim:write']);
@@ -24,14 +24,14 @@ export class ScimAuthorizationError extends Error {
 export function createScimAccessController({ credentials, now = () => new Date() } = {}) {
   const records = normaliseCredentials(credentials);
 
-  function authenticate(req) {
+  async function authenticate(req) {
     const token = bearerToken(req?.headers?.authorization);
-    const separator = token.indexOf('.');
+    const separator = token.lastIndexOf('.');
     if (separator < 2) throw new ScimAuthenticationError(undefined, 'SCIM_CREDENTIAL_INVALID');
     const keyId = token.slice(0, separator);
     const secret = token.slice(separator + 1);
     const record = records.find((item) => item.keyId === keyId);
-    if (!record || !verify(record, secret)) throw new ScimAuthenticationError(undefined, 'SCIM_CREDENTIAL_INVALID', { keyId });
+    if (!record || !(await verify(record, secret))) throw new ScimAuthenticationError(undefined, 'SCIM_CREDENTIAL_INVALID', { keyId });
     const current = now();
     if (record.status === 'revoked') throw new ScimAuthenticationError('The SCIM credential has been revoked.', 'SCIM_CREDENTIAL_REVOKED', { keyId });
     if (record.notBefore && current < record.notBefore) throw new ScimAuthenticationError('The SCIM credential is not active yet.', 'SCIM_CREDENTIAL_NOT_ACTIVE', { keyId });
@@ -92,7 +92,8 @@ function normaliseCredentials(value) {
     if (decoded.length !== 32 || decoded.toString('base64') !== secretHash) throw new TypeError(`SCIM credential ${keyId} has an invalid secretHash.`);
     const status = String(item.status ?? 'active');
     if (!STATUSES.has(status)) throw new TypeError(`SCIM credential ${keyId} has an unsupported status.`);
-    const scopes = [...new Set((Array.isArray(item.scopes) ? item.scopes : ['scim:read', 'scim:write']).map(String))];
+    if (!Array.isArray(item.scopes)) throw new TypeError(`SCIM credential ${keyId} must declare an explicit scopes array.`);
+    const scopes = [...new Set(item.scopes.map(String))];
     if (scopes.length === 0 || scopes.some((scope) => !SCOPES.has(scope))) throw new TypeError(`SCIM credential ${keyId} has invalid scopes.`);
     const notBefore = optionalDate(item.notBefore, 'notBefore');
     const expiresAt = optionalDate(item.expiresAt, 'expiresAt');
@@ -110,11 +111,13 @@ function bearerToken(value) {
 }
 
 function verify(record, secret) {
-  try {
+  return new Promise((resolve) => {
     const expected = Buffer.from(record.secretHash, 'base64');
-    const actual = scryptSync(secret, record.salt, expected.length);
-    return actual.length === expected.length && timingSafeEqual(actual, expected);
-  } catch { return false; }
+    scrypt(secret, record.salt, expected.length, (error, derived) => {
+      if (error || !Buffer.isBuffer(derived) || derived.length !== expected.length) return resolve(false);
+      try { return resolve(timingSafeEqual(derived, expected)); } catch { return resolve(false); }
+    });
+  });
 }
 
 function optionalDate(value, field) {
