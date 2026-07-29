@@ -1,16 +1,29 @@
 import { fileURLToPath } from 'node:url';
 import { createAuthenticationGatewayFromEnvironment } from '../src/security/authenticationGateway.js';
+import { createIdentityEntitlementRegistryFromEnvironment } from '../src/security/identityEntitlementRegistry.js';
+import { createScimAccessControllerFromEnvironment } from '../src/security/scimAccessController.js';
 
 export async function runIdentityCheck(env = process.env, options = {}) {
-  const gateway = options.authenticationGateway ?? createAuthenticationGatewayFromEnvironment(env, options);
+  const entitlementRegistry = options.entitlementRegistry ?? createIdentityEntitlementRegistryFromEnvironment(env, options.entitlementOptions);
+  const gateway = options.authenticationGateway ?? createAuthenticationGatewayFromEnvironment(env, { ...options, entitlementRegistry });
   const oidc = gateway.oidcAuthenticator;
   if (oidc && oidc.health().cacheState !== 'static') await oidc.refresh();
   const health = gateway.credentialHealth();
+  const scimEnabled = String(env.WORKFORCE_AUDIT_SCIM_ENABLED ?? 'false') === 'true';
+  const scim = scimEnabled
+    ? (options.scimAccessController ?? createScimAccessControllerFromEnvironment(env)).health()
+    : { status: 'disabled', enabled: false };
+  const status = health.status === 'ready'
+    && (!scimEnabled || scim.status === 'ready')
+    ? 'ready'
+    : 'unavailable';
   return {
-    status: health.status,
+    status,
     authenticationMode: gateway.mode,
     apiKeys: health.apiKeys,
-    oidc: health.oidc
+    oidc: health.oidc,
+    identityEntitlements: health.identityEntitlements,
+    scim
   };
 }
 
