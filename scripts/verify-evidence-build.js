@@ -4,7 +4,8 @@ const requiredFiles = [
   'src/evidenceRuntime.js', 'src/evidence/evidenceCrypto.js', 'src/evidence/evidenceHealthView.js',
   'src/evidence/evidenceRegistry.js', 'src/evidence/evidenceHandler.js', 'src/evidence/evidenceServer.js',
   'scripts/evidence-check.js', 'src/types/evidence.d.ts', 'docs/evidence-chain-of-custody.md',
-  'test/evidenceRegistry.test.js', 'test/evidenceServer.test.js', 'public/workforce-audit.html'
+  'test/evidenceRegistry.test.js', 'test/evidenceServer.test.js', 'test/evidenceRuntime.test.js',
+  'test/evidenceServerFailure.test.js', 'public/workforce-audit.html'
 ];
 for (const file of requiredFiles) await access(new URL(`../${file}`, import.meta.url));
 
@@ -32,6 +33,9 @@ await markers('src/evidence/evidenceServer.js', [
   'publicEvidenceHealth'
 ]);
 await markers('src/evidenceRuntime.js', ['cleanupRefresh', 'clearInterval', 'catch (error)']);
+await markers('test/evidenceRegistry.test.js', ['malformed PLH input', 'blank optional environment values', 'recursively removes operational secrets']);
+await markers('test/evidenceRuntime.test.js', ['clears the OIDC refresh timer exactly once', 'blank PORT']);
+await markers('test/evidenceServerFailure.test.js', ['unexpected evidence-handler rejection', 'INTERNAL_ERROR']);
 await markers('scripts/evidence-check.js', ['status', 'verify', 'events', 'EVIDENCE_COMMAND_FAILED']);
 await markers('docs/evidence-chain-of-custody.md', [
   'chain of custody', 'legal hold', 'DISPOSE EVD-', 'purgePending', 'reference guard', 'WORM'
