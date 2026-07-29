@@ -13,6 +13,8 @@ const PREFIX = '/api/workforce-audit/evidence';
 const ITEM_ROUTE = new RegExp(`^${PREFIX}/([^/]+)$`);
 const CONTENT_ROUTE = new RegExp(`^${PREFIX}/([^/]+)/content$`);
 const VERSION_ROUTE = new RegExp(`^${PREFIX}/([^/]+)/versions$`);
+const SCREENING_ROUTE = new RegExp(`^${PREFIX}/([^/]+)/screening$`);
+const SCREENING_ACTION_ROUTE = new RegExp(`^${PREFIX}/([^/]+)/screening/(release|reject|events)$`);
 const ACTION_ROUTE = new RegExp(`^${PREFIX}/([^/]+)/(verify|legal-hold|release-hold|dispose|events)$`);
 
 export function createEvidenceHandler({ registry, auditRegistry, authenticationGateway, securityTelemetry = null } = {}) {
@@ -32,7 +34,7 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
       }
       if (req.method === 'GET' && url.pathname === PREFIX) {
         authenticationGateway.authorise(principal, 'audit:read');
-        const status = optionalEnum(url.searchParams.get('status'), ['active', 'disposed']);
+        const status = optionalEnum(url.searchParams.get('status'), ['active', 'quarantined', 'rejected', 'disposed']);
         const hold = optionalBoolean(url.searchParams.get('legalHold'));
         const data = registry.list(principal.tenantId, {
           status,
@@ -44,7 +46,10 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
       if (req.method === 'POST' && url.pathname === PREFIX) {
         authenticationGateway.authorise(principal, 'finding:write');
         const data = registry.ingest(principal.tenantId, await readJson(req, bodyLimit), { actor: principal.subject });
-        record(securityTelemetry, event('evidence.ingested', 'info', principal, req, requestId, data));
+        record(securityTelemetry, event(
+          data.status === 'quarantined' ? 'evidence.quarantined' : 'evidence.ingested',
+          data.status === 'quarantined' ? 'high' : 'info', principal, req, requestId, data
+        ));
         return sendJson(res, 201, { success: true, data, meta: meta(requestId, principal) }, requestId);
       }
 
@@ -72,8 +77,43 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
       if (req.method === 'POST' && versionMatch) {
         authenticationGateway.authorise(principal, 'finding:write');
         const data = registry.addVersion(principal.tenantId, decodeURIComponent(versionMatch[1]), await readJson(req, bodyLimit), { actor: principal.subject });
-        record(securityTelemetry, event('evidence.version_added', 'info', principal, req, requestId, data));
+        record(securityTelemetry, event(
+          data.status === 'quarantined' ? 'evidence.version_quarantined' : 'evidence.version_added',
+          data.status === 'quarantined' ? 'high' : 'info', principal, req, requestId, data
+        ));
         return sendJson(res, 201, { success: true, data, meta: meta(requestId, principal) }, requestId);
+      }
+
+      const screeningActionMatch = url.pathname.match(SCREENING_ACTION_ROUTE);
+      if (screeningActionMatch) {
+        const evidenceId = decodeURIComponent(screeningActionMatch[1]);
+        const action = screeningActionMatch[2];
+        if (action === 'events') {
+          if (req.method !== 'GET') return notFound(res, requestId, principal);
+          authenticationGateway.authorise(principal, 'governance:read');
+          const data = registry.screeningEvents(principal.tenantId, { evidenceId, limit: positiveInteger(url.searchParams.get('limit'), 100, 500) });
+          return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId);
+        }
+        if (req.method !== 'POST') return notFound(res, requestId, principal);
+        authenticationGateway.authorise(principal, 'backup:restore');
+        const input = await readJson(req, 64 * 1024);
+        const data = action === 'release'
+          ? registry.releaseQuarantine(principal.tenantId, evidenceId, input, { actor: principal.subject })
+          : registry.rejectQuarantine(principal.tenantId, evidenceId, input, { actor: principal.subject });
+        record(securityTelemetry, event(
+          action === 'release' ? 'evidence.quarantine_released' : 'evidence.quarantine_rejected',
+          action === 'release' ? 'high' : 'critical', principal, req, requestId, data
+        ));
+        return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId);
+      }
+
+      const screeningMatch = url.pathname.match(SCREENING_ROUTE);
+      if (req.method === 'GET' && screeningMatch) {
+        authenticationGateway.authorise(principal, 'governance:read');
+        const data = registry.screeningReport(principal.tenantId, decodeURIComponent(screeningMatch[1]), {
+          version: optionalPositiveInteger(url.searchParams.get('version'))
+        });
+        return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId);
       }
 
       const itemMatch = url.pathname.match(ITEM_ROUTE);
