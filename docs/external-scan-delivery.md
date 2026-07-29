@@ -11,14 +11,11 @@ Each provider has two independent key families:
 - HMAC keys authenticate claim, acknowledge, fail and attestation requests.
 - RSA public keys encrypt scan-job content. The scanner retains the matching private key; BasitClaw must never receive or store that private key.
 
-For each job BasitClaw generates a random 256-bit content key and 96-bit IV. Evidence bytes and metadata are encrypted with AES-256-GCM. The content key is wrapped with RSA-OAEP-SHA-256 using the selected provider public key. The queue contains only:
+For each job BasitClaw generates a random 256-bit content key and 96-bit IV. Evidence bytes and metadata are encrypted with AES-256-GCM. The content key is wrapped with RSA-OAEP-SHA-256 using the selected provider public key.
 
-- a sealed ciphertext package;
-- an RSA-wrapped content key;
-- non-sensitive delivery state;
-- AES-256-GCM-encrypted management metadata.
+Every durable job record is itself AES-256-GCM encrypted and authenticated with the evidence keyring. Inside that encrypted record, the evidence package remains independently sealed to the scanner's RSA public key and management metadata has a separate authenticated envelope. State directories and deterministic job filenames expose only coarse queue posture and an opaque job identifier.
 
-The queue does not contain plaintext evidence, filenames, tenant IDs or evidence IDs. Completed, acknowledged and dead-letter records drop the sealed ciphertext package.
+The queue does not contain plaintext evidence, filenames, tenant IDs, evidence IDs, providers, state fields or claim tokens. Completed, acknowledged and dead-letter records drop the sealed evidence ciphertext package. Short-lived request replay markers are also encrypted and contain no request body or evidence identifier.
 
 ## Production configuration
 
@@ -34,6 +31,8 @@ WORKFORCE_AUDIT_EXTERNAL_SCANNER_PROVIDERS='{"managed-av":{"keys":{"2026-q3":"<b
 ```
 
 RSA delivery keys must be at least 2048 bits. Use separate private keys per scanner provider and environment. Store private keys in the scanner's approved HSM, KMS or secret manager.
+
+Scanner delivery cannot start unless encrypted evidence custody, deterministic screening and signed external attestations are all enabled. Production should set both external attestation enforcement and delivery required mode.
 
 ## Governance routes
 
@@ -55,6 +54,8 @@ Queue body:
 ```
 
 Only a quarantined immutable version can be queued. BasitClaw reopens the encrypted evidence object internally, authenticates its AES-GCM envelope, checks identity, SHA-256 and size, and compares those values with the screening report before creating the job. The deterministic job ID makes repeated queue requests idempotent.
+
+A repeat queue request for a pending, inflight, delivered or completed job returns the existing job. A repeat request for a dead-letter job creates a fresh sealed package, resets its delivery budget and returns it to `pending` under the same deterministic job ID.
 
 ## Scanner pull routes
 
@@ -106,7 +107,7 @@ X-BasitClaw-Scan-Nonce
 X-BasitClaw-Scan-Signature
 ```
 
-The nonce must be unique. BasitClaw stores a short-lived digest-only replay marker on the shared filesystem. Reusing the same signed request returns `401 EXTERNAL_SCAN_AUTHENTICATION_FAILED` with reason `replay_detected`.
+The nonce must be unique. BasitClaw stores a short-lived encrypted digest-only replay marker on the shared filesystem. Reusing the same signed request returns `401 EXTERNAL_SCAN_AUTHENTICATION_FAILED` with reason `replay_detected`.
 
 ## Package decryption
 
@@ -130,13 +131,15 @@ The decrypted payload format is `basitclaw-external-scan-job-payload`, version `
 
 - `pending`: sealed package is waiting for a provider claim.
 - `inflight`: provider owns a time-limited claim.
-- `delivered`: provider acknowledged package receipt; the queued ciphertext is removed.
+- `delivered`: provider acknowledged durable package receipt; the queued ciphertext is removed and the job awaits an attestation.
 - `completed`: a matching signed attestation was accepted; the queued ciphertext is removed.
 - `dead-letter`: delivery expired, exceeded attempts or failed permanently; the queued ciphertext is removed.
 
-Expired claims return to `pending` while the job TTL and attempt budget remain valid. Otherwise they move to `dead-letter`. Required delivery treats dead letters as an unavailable production boundary.
+Expired claims return to `pending` while the job TTL and attempt budget remain valid. The old token is rejected. Otherwise the job moves to `dead-letter`. Required delivery treats dead letters as an unavailable production boundary.
 
-An attestation may arrive before acknowledgement. It atomically completes the deterministic matching job and invalidates any outstanding claim. A later acknowledgement is rejected because the claim is no longer owned.
+State transitions rewrite the authenticated record and then atomically rename it to the destination state directory. On restart or the next queue operation, BasitClaw reconciles any crash-interrupted directory/state mismatch from the authenticated record. Duplicate copies fail integrity verification rather than being silently selected.
+
+An attestation may arrive before acknowledgement. Under the shared scanner-policy lock it completes the deterministic matching job and invalidates any outstanding claim. The attestation and job use separate durable stores; if job completion fails after the attestation commit, exact attestation replay is idempotent and retries completion. A later acknowledgement is rejected because the claim is no longer owned.
 
 ## Rotation
 
@@ -153,10 +156,10 @@ HMAC and RSA delivery keys rotate independently.
 
 Monitor:
 
-- pending and inflight age;
+- pending, inflight and delivered age;
 - dead-letter count and reason codes;
 - repeated authentication failures or replay detections;
-- claim recovery frequency;
+- claim recovery and state-reconciliation frequency;
 - jobs delivered without a timely attestation;
 - delivery key IDs still represented by active jobs;
 - scanner clock skew;
