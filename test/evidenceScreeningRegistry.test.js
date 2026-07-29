@@ -13,7 +13,7 @@ import {
 const key = Buffer.alloc(32, 11).toString('base64');
 const encode = (value) => Buffer.from(value).toString('base64');
 
-function fixture() {
+function fixture({ now = () => new Date(), eventRetention = 100 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'screened-evidence-'));
   const base = createEvidenceRegistry({
     directory,
@@ -28,7 +28,8 @@ function fixture() {
     engine,
     keys: { k1: key },
     primaryKeyId: 'k1',
-    eventRetention: 100
+    eventRetention,
+    now
   });
   return { registry, directory };
 }
@@ -123,4 +124,27 @@ test('tenant status reports quarantined and rejected evidence posture', () => {
   assert.equal(status.status, 'attention');
   assert.equal(status.screening.quarantined, 1);
   assert.equal(status.screening.rejected, 0);
+});
+
+test('screening events honour the injected clock and configured retention anchor', () => {
+  const occurredAt = '2030-01-02T03:04:05.000Z';
+  const { registry } = fixture({ now: () => new Date(occurredAt), eventRetention: 100 });
+  const item = registry.ingest('tenant-a', {
+    filename: 'version-0.txt', mediaType: 'text/plain', contentBase64: encode('version-0')
+  }, { actor: 'auditor.one' });
+  for (let version = 1; version <= 100; version += 1) {
+    registry.addVersion('tenant-a', item.evidenceId, {
+      filename: `version-${version}.txt`,
+      mediaType: 'text/plain',
+      contentBase64: encode(`version-${version}`)
+    }, { actor: 'auditor.one' });
+  }
+  const events = registry.screeningEvents('tenant-a', { limit: 500 });
+  assert.equal(events.length, 100);
+  assert.equal(events[0].sequence, 101);
+  assert.equal(events.at(-1).sequence, 2);
+  assert.ok(events.every((event) => event.occurredAt === occurredAt));
+  const integrity = registry.verify('tenant-a', item.evidenceId).screening;
+  assert.equal(integrity.anchorSequence, 1);
+  assert.equal(integrity.headSequence, 101);
 });
