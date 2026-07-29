@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { createSecurityArchiveCodec } from '../src/security/securityArchiveCodec.js';
@@ -82,6 +82,28 @@ test('missing historical archive keys fail lifecycle inspection closed', async (
   const status = lifecycle.status();
   assert.equal(status.status, 'unavailable');
   assert.deepEqual(status.missingKeyIds, ['old-key']);
+});
+
+test('archive-chain inconsistency blocks lifecycle readiness and retirement', async () => {
+  const root = await directory();
+  await withArchiveEnvironment({}, async () => {
+    const archive = createSecurityEventArchive({ directory: root, encryptionKey: oldKey, keyId: 'old-key' });
+    archive.append(event('SEC-ONE'));
+    archive.append(event('SEC-TWO'));
+  });
+  const segmentName = (await readdir(resolve(root, 'segments')))[0];
+  const segmentPath = resolve(root, 'segments', segmentName);
+  const envelopes = (await readFile(segmentPath, 'utf8')).trim().split('\n').map(JSON.parse);
+  envelopes[1].previousHash = 'corrupted-link';
+  await writeFile(segmentPath, `${envelopes.map(JSON.stringify).join('\n')}\n`, 'utf8');
+
+  const lifecycle = createSecurityArchiveKeyLifecycle({
+    directory: root,
+    encryptionKeys: { 'old-key': oldKey, 'new-key': newKey },
+    primaryKeyId: 'new-key'
+  });
+  assert.equal(lifecycle.status().status, 'unavailable');
+  assert.throws(() => lifecycle.canRetire('old-key'), /sequence or hash link/);
 });
 
 test('retention signatures remain verifiable across primary-key rotation', () => {
