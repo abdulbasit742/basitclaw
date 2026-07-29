@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { deriveFederatedSubject } from './federatedIdentity.js';
+import { deriveFederatedSubject, exactIssuer } from './federatedIdentity.js';
 import {
   IdentityEntitlementConflictError,
   IdentityEntitlementError,
@@ -38,7 +38,7 @@ export function createScimHandler({
         if (!burst.allowed) return scimError(res, 429, 'tooMany', 'The SCIM request burst limit has been exceeded.', requestId, { 'retry-after': String(burst.retryAfterSeconds ?? 1) });
       }
 
-      try { principal = accessController.authenticate(req); }
+      try { principal = await accessController.authenticate(req); }
       catch (error) {
         if (error instanceof ScimAuthenticationError) {
           const failed = rateLimiter?.consume?.(`scim-authentication:${clientAddress}`, 'authFailure');
@@ -88,7 +88,9 @@ export function createScimHandler({
 
       const match = url.pathname.match(/^\/scim\/v2\/Users\/([^/]+)$/);
       if (!match) return scimError(res, 404, null, 'SCIM resource not found.', requestId);
-      const id = decodeURIComponent(match[1]);
+      let id;
+      try { id = decodeURIComponent(match[1]); }
+      catch { throw new TypeError('SCIM resource identifier contains invalid percent encoding.'); }
 
       if (req.method === 'GET') {
         const recordValue = registry.get(id);
@@ -173,6 +175,7 @@ function provisioningInput(body, issuer, expectedVersion) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new TypeError('SCIM User payload must be an object.');
   const extension = body[WORKFORCE_EXTENSION];
   if (!extension || typeof extension !== 'object' || Array.isArray(extension)) throw new TypeError(`SCIM User payload requires ${WORKFORCE_EXTENSION}.`);
+  if (body.active !== undefined && typeof body.active !== 'boolean') throw new TypeError('SCIM User active must be a boolean.');
   return {
     issuer,
     externalSubject: requiredText(body.externalId, 'externalId', 512),
@@ -206,7 +209,11 @@ function patchChanges(body) {
 
 function applyPatchValue(changes, pathValue, value) {
   const path = String(pathValue).trim();
-  if (path.toLowerCase() === 'active') { changes.active = Boolean(value); return; }
+  if (path.toLowerCase() === 'active') {
+    if (typeof value !== 'boolean') throw new TypeError('SCIM active replacement must be a boolean.');
+    changes.active = value;
+    return;
+  }
   if (path === WORKFORCE_EXTENSION) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('SCIM workforce extension replacement must be an object.');
     for (const [field, nestedValue] of Object.entries(value)) applyPatchValue(changes, `${WORKFORCE_EXTENSION}:${field}`, nestedValue);
@@ -223,6 +230,7 @@ function toScimUser(record) {
   return {
     schemas: [CORE_USER_SCHEMA, WORKFORCE_EXTENSION],
     id: record.id,
+    userName: record.subject,
     active: record.active,
     displayName: record.displayName ?? undefined,
     meta: {
@@ -299,4 +307,3 @@ function applyRateDecision(res, limiter, decision) { for (const [name, value] of
 function header(req, name) { const value = req?.headers?.[name]; return Array.isArray(value) ? value[0]?.trim() ?? '' : typeof value === 'string' ? value.trim() : ''; }
 function numberParam(value, fallback, min, max) { if (value === null) return fallback; const parsed = Number(value); if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) throw new TypeError(`SCIM numeric parameter must be from ${min} to ${max}.`); return parsed; }
 function requiredText(value, field, max) { const text = String(value ?? '').trim(); if (!text || text.length > max) throw new TypeError(`${field} must contain from 1 to ${max} characters.`); return text; }
-function exactIssuer(value) { let url; try { url = new URL(String(value ?? '')); } catch { throw new TypeError('SCIM issuer must be a valid URL.'); } if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) throw new TypeError('SCIM issuer must be an HTTPS URL without credentials, query, or fragment.'); return url.toString().replace(/\/$/, ''); }
