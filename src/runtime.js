@@ -43,8 +43,9 @@ export function prepareIdentityLifecycle({ app, env = process.env } = {}) {
     throw error;
   }
   const scimHealth = app?.scimHandler?.health?.() ?? { registry: entitlementHealth, credentials: { status: 'disabled', enabled: false } };
-  if (String(env.WORKFORCE_AUDIT_SCIM_ENABLED ?? 'false') === 'true'
-      && (scimHealth.registry?.status === 'unavailable' || scimHealth.credentials?.status !== 'ready')) {
+  const scimEnabled = String(env.WORKFORCE_AUDIT_SCIM_ENABLED ?? 'false') === 'true';
+  const registryReady = ['ready', 'attention', 'degraded'].includes(scimHealth.registry?.status);
+  if (scimEnabled && (!registryReady || scimHealth.credentials?.status !== 'ready')) {
     const error = new Error('The SCIM provisioning boundary is not ready.');
     error.code = 'SCIM_UNAVAILABLE';
     error.details = scimHealth;
