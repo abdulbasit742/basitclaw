@@ -17,12 +17,12 @@ import {
   writeFileSync
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { permissionsForRole } from './accessControl.js';
 import { createFileMutex } from './fileMutex.js';
-import { deriveFederatedSubject } from './federatedIdentity.js';
+import { deriveFederatedSubject, exactIssuer } from './federatedIdentity.js';
 
 const FORMAT = 'basitclaw-identity-entitlements';
 const VERSION = 1;
-const ROLES = new Set(['audit_viewer', 'auditor', 'audit_manager', 'compliance_admin']);
 const MODES = new Set(['disabled', 'observe', 'enforce']);
 
 export class IdentityEntitlementError extends Error {
@@ -68,7 +68,7 @@ export function createIdentityEntitlementRegistry({
   const safeReviewDays = integer(reviewMaxAgeDays, 'reviewMaxAgeDays', 1, 3650);
   const safeEventRetention = integer(eventRetention, 'eventRetention', 100, 100_000);
 
-  if (lifecycleMode === 'disabled') return disabledRegistry();
+  if (lifecycleMode === 'disabled') return createDisabledIdentityEntitlementRegistry();
 
   const keyring = normaliseKeyring(keys, primaryKeyId);
   const filePath = resolve(root, 'entitlements.enc.json');
@@ -81,23 +81,22 @@ export function createIdentityEntitlementRegistry({
     const record = snapshot.users[principal.subject];
     const current = now();
     if (!record) {
-      if (lifecycleMode === 'observe') return Object.freeze({ ...principal, entitlementStatus: 'unprovisioned' });
+      if (lifecycleMode === 'observe') return observed(principal, 'unprovisioned');
       throw denied('The federated identity has not been provisioned.', 'IDENTITY_NOT_PROVISIONED', principal);
     }
-    if (!record.active) throw denied('The federated identity is suspended.', 'IDENTITY_SUSPENDED', principal, record);
+    if (!record.active) {
+      if (lifecycleMode === 'observe') return observed(principal, 'suspended', record);
+      throw denied('The federated identity is suspended.', 'IDENTITY_SUSPENDED', principal, record);
+    }
     if (record.tenantId !== principal.tenantId || record.role !== principal.role) {
+      if (lifecycleMode === 'observe') return observed(principal, 'mismatched', record);
       throw denied('The federated token does not match the approved entitlement.', 'IDENTITY_ENTITLEMENT_MISMATCH', principal, record);
     }
     if (new Date(record.reviewBy).getTime() <= current.getTime()) {
+      if (lifecycleMode === 'observe') return observed(principal, 'review_overdue', record);
       throw denied('The federated identity entitlement review is overdue.', 'IDENTITY_REVIEW_OVERDUE', principal, record);
     }
-    return Object.freeze({
-      ...principal,
-      entitlementStatus: 'active',
-      entitlementId: record.id,
-      entitlementVersion: record.version,
-      entitlementReviewBy: record.reviewBy
-    });
+    return observed(principal, 'active', record);
   }
 
   function upsert(input, context = {}) {
@@ -139,12 +138,13 @@ export function createIdentityEntitlementRegistry({
     return mutate((snapshot) => {
       const existing = findById(snapshot, id);
       assertVersion(existing, changes.expectedVersion);
+      if (changes.active !== undefined && typeof changes.active !== 'boolean') throw new TypeError('active must be a boolean.');
       const timestamp = now().toISOString();
       const next = {
         ...existing,
         tenantId: changes.tenantId === undefined ? existing.tenantId : safeIdentifier(changes.tenantId, 'tenantId'),
         role: changes.role === undefined ? existing.role : safeRole(changes.role),
-        active: changes.active === undefined ? existing.active : Boolean(changes.active),
+        active: changes.active === undefined ? existing.active : changes.active,
         displayName: changes.displayName === undefined ? existing.displayName : optionalText(changes.displayName, 256),
         reviewBy: changes.reviewBy === undefined ? existing.reviewBy : reviewDate(changes.reviewBy, now()),
         updatedAt: timestamp,
@@ -221,8 +221,10 @@ export function createIdentityEntitlementRegistry({
   function health() {
     try {
       const review = reviewStatus();
+      const { status: reviewStatusValue, ...reviewMetrics } = review;
       return {
-        status: review.status === 'attention' && lifecycleMode === 'enforce' ? 'degraded' : 'ready',
+        status: 'ready',
+        reviewStatus: reviewStatusValue,
         enabled: true,
         required: lifecycleMode === 'enforce',
         mode: lifecycleMode,
@@ -231,7 +233,7 @@ export function createIdentityEntitlementRegistry({
         distributed: true,
         configuredKeyCount: keyring.keys.size,
         primaryKeyId: keyring.primaryKeyId,
-        ...review
+        ...reviewMetrics
       };
     } catch (error) {
       return {
@@ -305,10 +307,21 @@ export function createIdentityEntitlementRegistryFromEnvironment(env = process.e
   });
 }
 
-function disabledRegistry() {
+export function createDisabledIdentityEntitlementRegistry() {
+  const disabled = () => {
+    throw new IdentityEntitlementError(
+      'The identity entitlement lifecycle is disabled.',
+      'IDENTITY_ENTITLEMENT_LIFECYCLE_DISABLED'
+    );
+  };
   return {
     mode: 'disabled',
     enforce: (principal) => principal,
+    upsert: disabled,
+    patch: disabled,
+    deactivate: disabled,
+    get: disabled,
+    getBySubject: () => null,
     tenantIds: () => [],
     health: () => ({ status: 'disabled', enabled: false, required: false, mode: 'disabled' }),
     reviewStatus: () => ({ status: 'disabled', total: 0, active: 0, suspended: 0, overdue: 0, dueWithin30Days: 0, tenantCount: 0, sequence: 0 }),
@@ -320,6 +333,7 @@ function disabledRegistry() {
 function normaliseProvisioningInput(input, { now, reviewMaxAgeDays }) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('Identity provisioning input must be an object.');
   const current = now();
+  if (input.active !== undefined && typeof input.active !== 'boolean') throw new TypeError('active must be a boolean.');
   return {
     issuer: exactIssuer(input.issuer),
     externalSubject: requiredText(input.externalSubject, 'externalSubject', 512),
@@ -331,6 +345,20 @@ function normaliseProvisioningInput(input, { now, reviewMaxAgeDays }) {
     reason: requiredReason(input.reason),
     source: safeIdentifier(input.source ?? 'scim', 'source')
   };
+}
+
+function observed(principal, status, record = null) {
+  return Object.freeze({
+    ...principal,
+    entitlementStatus: status,
+    ...(record ? {
+      entitlementId: record.id,
+      entitlementVersion: record.version,
+      entitlementReviewBy: record.reviewBy,
+      approvedTenantId: record.tenantId,
+      approvedRole: record.role
+    } : {})
+  });
 }
 
 function denied(message, code, principal, record = null) {
@@ -472,9 +500,12 @@ function storeError(error) {
   if (error instanceof IdentityEntitlementStoreError) return error;
   return new IdentityEntitlementStoreError(undefined, { cause: error?.code ?? error?.message ?? 'unknown' });
 }
-function safeRole(value) { const role = String(value ?? ''); if (!ROLES.has(role)) throw new TypeError('Unsupported workforce-audit role.'); return role; }
+function safeRole(value) {
+  const role = String(value ?? '');
+  try { permissionsForRole(role); } catch { throw new TypeError('Unsupported workforce-audit role.'); }
+  return role;
+}
 function safeIdentifier(value, field) { const v = String(value ?? '').trim(); if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(v)) throw new TypeError(`${field} must be a safe identifier.`); return v; }
-function exactIssuer(value) { let url; try { url = new URL(String(value ?? '')); } catch { throw new TypeError('issuer must be a valid URL.'); } if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) throw new TypeError('issuer must be an HTTPS URL without credentials, query, or fragment.'); return url.toString().replace(/\/$/, ''); }
 function requiredText(value, field, max) { const v = String(value ?? '').trim(); if (!v || v.length > max) throw new TypeError(`${field} must contain from 1 to ${max} characters.`); return v; }
 function optionalText(value, max) { if (value === undefined || value === null || value === '') return null; return requiredText(value, 'text', max); }
 function requiredReason(value) { return requiredText(value, 'reason', 500); }
