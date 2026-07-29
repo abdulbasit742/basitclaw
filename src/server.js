@@ -2,33 +2,53 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { PersistenceError } from './persistence/encryptedSnapshotStore.js';
+import { createResilienceSchedulerFromEnvironment } from './resilience/resilienceScheduler.js';
+import { AuthenticationError, AuthorizationError, createAccessController } from './security/accessControl.js';
 import {
   BackupError,
   BackupIntegrityError,
   BackupNotFoundError,
-  RecoveryConflictError
+  RecoveryConflictError,
+  ReplicaError,
+  ReplicaIntegrityError,
+  ReplicaNotFoundError,
+  createWorkforceAuditRegistry
 } from './services/workforceAuditRegistry.js';
-import { PersistenceError } from './persistence/encryptedSnapshotStore.js';
-import { AuthenticationError, AuthorizationError, createAccessController } from './security/accessControl.js';
-import { createWorkforceAuditRegistry } from './services/workforceAuditRegistry.js';
 import { NotFoundError, ValidationError } from './services/workforceAuditService.js';
 
 const dashboardPath = fileURLToPath(new URL('../public/workforce-audit.html', import.meta.url));
 
 export function createApp({
   registry = createWorkforceAuditRegistry(),
-  accessController = createAccessController()
+  accessController = createAccessController(),
+  resilienceScheduler = null
 } = {}) {
-  return createServer(async (req, res) => {
+  const scheduler = resilienceScheduler ?? createResilienceSchedulerFromEnvironment({
+    registry,
+    tenantIds: typeof accessController.tenantIds === 'function' ? accessController.tenantIds() : []
+  });
+
+  const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const requestId = randomUUID();
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
         const persistence = registry.getPersistenceHealth();
-        const status = persistence.status === 'ready' && persistence.backups?.status === 'ready' ? 200 : 503;
+        const replicaRequiredFailure = persistence.replicas?.required
+          && (persistence.replicas.status !== 'ready' || persistence.replicas.readiness !== 'ready');
+        const status = persistence.status === 'ready'
+          && persistence.backups?.status === 'ready'
+          && !replicaRequiredFailure
+          ? 200
+          : 503;
         return sendJson(res, status, {
           success: status === 200,
-          data: { status: status === 200 ? 'ok' : 'degraded', persistence },
+          data: {
+            status: status === 200 ? 'ok' : 'degraded',
+            persistence,
+            scheduler: scheduler.status()
+          },
           meta: { requestId }
         }, requestId);
       }
@@ -91,6 +111,16 @@ export function createApp({
         accessController.authorise(principal, 'governance:read');
         return sendJson(res, 200, { success: true, data: registry.getPersistenceHealth(), meta }, requestId);
       }
+      if (req.method === 'GET' && url.pathname === '/api/workforce-audit/resilience-status') {
+        accessController.authorise(principal, 'resilience:read');
+        const data = {
+          ...registry.getResilienceStatus(principal.tenantId, {
+            drillMaxAgeDays: scheduler.status().drillMaxAgeDays
+          }),
+          scheduler: scheduler.status()
+        };
+        return sendJson(res, 200, { success: true, data, meta }, requestId);
+      }
       if (req.method === 'GET' && url.pathname === '/api/workforce-audit/backups') {
         accessController.authorise(principal, 'backup:read');
         return sendJson(res, 200, { success: true, data: registry.listTenantBackups(principal.tenantId), meta }, requestId);
@@ -105,10 +135,31 @@ export function createApp({
         });
         return sendJson(res, 201, { success: true, data, meta }, requestId);
       }
+      if (req.method === 'GET' && url.pathname === '/api/workforce-audit/replicas') {
+        accessController.authorise(principal, 'replica:read');
+        return sendJson(res, 200, { success: true, data: registry.listTenantReplicas(principal.tenantId), meta }, requestId);
+      }
       const backupVerifyMatch = url.pathname.match(/^\/api\/workforce-audit\/backups\/([^/]+)\/verify$/);
       if (req.method === 'POST' && backupVerifyMatch) {
         accessController.authorise(principal, 'backup:read');
         const data = registry.verifyTenantBackup(principal.tenantId, decodeURIComponent(backupVerifyMatch[1]));
+        return sendJson(res, 200, { success: true, data, meta }, requestId);
+      }
+      const backupReplicateMatch = url.pathname.match(/^\/api\/workforce-audit\/backups\/([^/]+)\/replicate$/);
+      if (req.method === 'POST' && backupReplicateMatch) {
+        accessController.authorise(principal, 'replica:write');
+        const input = await readJson(req);
+        const data = registry.replicateTenantBackup(
+          principal.tenantId,
+          decodeURIComponent(backupReplicateMatch[1]),
+          { actor: principal.subject, reason: input.reason }
+        );
+        return sendJson(res, 201, { success: true, data, meta }, requestId);
+      }
+      const replicaVerifyMatch = url.pathname.match(/^\/api\/workforce-audit\/replicas\/([^/]+)\/verify$/);
+      if (req.method === 'POST' && replicaVerifyMatch) {
+        accessController.authorise(principal, 'replica:read');
+        const data = registry.verifyTenantReplica(principal.tenantId, decodeURIComponent(replicaVerifyMatch[1]));
         return sendJson(res, 200, { success: true, data, meta }, requestId);
       }
       const backupRestoreMatch = url.pathname.match(/^\/api\/workforce-audit\/backups\/([^/]+)\/restore$/);
@@ -126,6 +177,27 @@ export function createApp({
             dryRun: input.dryRun !== false
           }
         );
+        return sendJson(res, 200, { success: true, data, meta }, requestId);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/workforce-audit/recovery-drills') {
+        accessController.authorise(principal, 'drill:run');
+        const input = await readJson(req);
+        const data = registry.runRecoveryDrill(principal.tenantId, {
+          actor: principal.subject,
+          backupId: input.backupId ?? null
+        });
+        return sendJson(res, 201, { success: true, data, meta }, requestId);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/workforce-audit/resilience-cycle') {
+        accessController.authorise(principal, 'resilience:run');
+        const input = await readJson(req);
+        const schedulerStatus = scheduler.status();
+        const data = registry.runResilienceCycle([principal.tenantId], {
+          actor: principal.subject,
+          scheduledBackupIntervalMinutes: input.scheduledBackupIntervalMinutes
+            ?? (schedulerStatus.intervalMinutes > 0 ? schedulerStatus.intervalMinutes : 1440),
+          drillMaxAgeDays: input.drillMaxAgeDays ?? schedulerStatus.drillMaxAgeDays
+        });
         return sendJson(res, 200, { success: true, data, meta }, requestId);
       }
       if (req.method === 'POST' && url.pathname === '/api/workforce-audit/engagements') {
@@ -157,14 +229,14 @@ export function createApp({
       if (error instanceof ValidationError) {
         return sendJson(res, 400, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
       }
-      if (error instanceof BackupNotFoundError || error instanceof NotFoundError) {
+      if (error instanceof BackupNotFoundError || error instanceof ReplicaNotFoundError || error instanceof NotFoundError) {
         return sendJson(res, 404, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
       }
-      if (error instanceof BackupIntegrityError || error instanceof RecoveryConflictError) {
+      if (error instanceof BackupIntegrityError || error instanceof ReplicaIntegrityError || error instanceof RecoveryConflictError) {
         return sendJson(res, 409, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
       }
-      if (error instanceof BackupError) {
-        return sendJson(res, 503, { success: false, error: 'The workforce-audit recovery operation is unavailable.', code: error.code, meta: { requestId } }, requestId);
+      if (error instanceof BackupError || error instanceof ReplicaError) {
+        return sendJson(res, 503, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
       }
       if (error instanceof PersistenceError || error?.code === 'PERSISTENCE_UNAVAILABLE') {
         return sendJson(res, 503, {
@@ -181,6 +253,11 @@ export function createApp({
       return sendJson(res, 500, { success: false, error: 'Internal server error.', code: 'INTERNAL_ERROR', meta: { requestId } }, requestId);
     }
   });
+
+  server.once('listening', () => scheduler.start());
+  server.once('close', () => scheduler.stop());
+  server.resilienceScheduler = scheduler;
+  return server;
 }
 
 async function readJson(req) {

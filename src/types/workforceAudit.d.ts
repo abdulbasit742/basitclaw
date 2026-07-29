@@ -64,10 +64,7 @@ export interface WorkforceAuditSnapshot {
   schemaVersion: 1;
   tenantId: string;
   savedAt: string;
-  state: {
-    engagements: AuditEngagement[];
-    findings: AuditFinding[];
-  };
+  state: { engagements: AuditEngagement[]; findings: AuditFinding[] };
   governanceEvents: GovernanceEvent[];
 }
 
@@ -86,25 +83,74 @@ export interface BackupManifest {
   prunedBackupIds?: string[];
 }
 
-export interface BackupVerification extends BackupManifest {
-  valid: true;
-  summary: {
-    engagementCount: number;
-    findingCount: number;
-    governanceEventCount: number;
-    governanceHeadHash: string | null;
-  };
+export interface SnapshotSummary {
+  engagementCount: number;
+  findingCount: number;
+  governanceEventCount: number;
+  governanceHeadHash: string | null;
 }
 
-export interface RestorePreview {
-  dryRun: true;
-  backup: BackupVerification;
-  current: {
-    engagementCount: number;
-    findingCount: number;
-    governanceEventCount: number;
-    governanceHeadHash: string | null;
+export interface BackupVerification extends BackupManifest {
+  valid: true;
+  summary: SnapshotSummary;
+}
+
+export interface ReplicaManifest {
+  format: 'basitclaw-workforce-audit-replica';
+  version: 1;
+  backupId: string;
+  tenantHash: string;
+  sourceCreatedAt: string;
+  replicatedAt: string;
+  replicatedOrder: number;
+  keyId: string;
+  checksumSha256: string;
+  sizeBytes: number;
+  kind: BackupKind;
+  prunedReplicaIds?: string[];
+  idempotent?: boolean;
+}
+
+export interface ReplicaVerification extends ReplicaManifest {
+  valid: true;
+  summary: SnapshotSummary;
+}
+
+export interface ReplicaTenantHealth {
+  status: 'ready' | 'stale' | 'missing' | 'empty' | 'disabled' | 'unavailable';
+  required: boolean;
+  maxLagMinutes: number | null;
+  latestReplica: ReplicaManifest | null;
+  lagMinutes: number | null;
+  error?: string;
+}
+
+export interface SchedulerStatus {
+  enabled: boolean;
+  active: boolean;
+  running: boolean;
+  tenantCount: number;
+  intervalMinutes: number;
+  drillMaxAgeDays: number;
+  tickSeconds: number;
+  lastRunAt: string | null;
+  lastResult: unknown;
+  lastError: string | null;
+}
+
+export interface ResilienceStatus {
+  status: 'ready' | 'attention' | 'disabled';
+  generatedAt: string;
+  latestBackup: BackupManifest | null;
+  latestReplica: ReplicaManifest | null;
+  replicaHealth: ReplicaTenantHealth;
+  drill: {
+    status: 'ready' | 'stale' | 'missing' | 'disabled';
+    maxAgeDays: number;
+    ageDays: number | null;
+    latestEvent: GovernanceEvent | null;
   };
+  scheduler?: SchedulerStatus;
 }
 
 export interface BackupHealth {
@@ -116,6 +162,21 @@ export interface BackupHealth {
   error?: string;
 }
 
+export interface ReplicaHealth {
+  status: 'ready' | 'unavailable' | 'disabled';
+  enabled: boolean;
+  required: boolean;
+  mode: 'encrypted-file-replica';
+  directory?: string | null;
+  retention: number;
+  maxLagMinutes: number | null;
+  tenantDirectoryCount: number;
+  readiness?: 'ready' | 'degraded' | 'disabled';
+  degradedTenantCount?: number;
+  loadedTenantHealth?: Array<ReplicaTenantHealth & { tenantId: string }>;
+  error?: string;
+}
+
 export interface PersistenceHealth {
   status: 'ready' | 'unavailable';
   mode: 'encrypted-file';
@@ -124,5 +185,6 @@ export interface PersistenceHealth {
   configuredKeyIds: string[];
   persistedTenantCount: number;
   backups: BackupHealth;
+  replicas: ReplicaHealth;
   error?: string;
 }
