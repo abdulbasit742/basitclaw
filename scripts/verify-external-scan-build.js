@@ -8,6 +8,7 @@ const requiredFiles = [
   'src/evidence/externalScanServer.js',
   'test/externalScanAttestationRegistry.test.js',
   'test/externalScanHttp.test.js',
+  'test/externalScanPolicyLock.test.js',
   'docs/external-scanner-attestations.md',
   'config/evidence-screening.production.env.example'
 ];
@@ -35,13 +36,17 @@ await requireMarkers('src/evidence/externalScanEvidenceRegistry.js', 'External s
   'requireCleanForRelease',
   'recordExternalScanAttestation',
   'externalScanAttestations',
-  'externalScanStatus'
+  'externalScanStatus',
+  'external-scan-release-policy',
+  '.external-scan-policy-locks'
 ]);
 await requireMarkers('src/evidence/externalScanCallbackHandler.js', 'External scan callback', [
   '/api/workforce-audit/external-scanner/attestations',
   'x-content-type-options',
   'HMAC realm',
-  'external_scan.authentication_failed'
+  'external_scan.authentication_failed',
+  'EXTERNAL_SCAN_POLICY_BUSY',
+  'EXTERNAL_SCAN_POLICY_UNAVAILABLE'
 ]);
 await requireMarkers('src/evidence/externalScanManagementHandler.js', 'External scan management API', [
   '/api/workforce-audit/external-scanner/status',
