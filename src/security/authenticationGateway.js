@@ -110,7 +110,13 @@ export function createAuthenticationGateway({
   function tenantIds() {
     const apiTenants = typeof apiKeyController?.tenantIds === 'function' ? apiKeyController.tenantIds() : [];
     const provisionedTenants = typeof entitlements.tenantIds === 'function' ? entitlements.tenantIds() : [];
-    const privilegedTenants = typeof privilegedAccess.tenantIds === 'function' ? privilegedAccess.tenantIds() : [];
+    let privilegedTenants = [];
+    if (typeof privilegedAccess.tenantIds === 'function') {
+      try { privilegedTenants = privilegedAccess.tenantIds(); }
+      catch (error) {
+        if (!(error instanceof PrivilegedAccessStoreError)) throw error;
+      }
+    }
     return [...new Set([...apiTenants, ...knownOidcTenants, ...provisionedTenants, ...privilegedTenants])];
   }
 
