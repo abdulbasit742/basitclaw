@@ -1,6 +1,7 @@
 export type ApiCredentialStatus = 'active' | 'retiring' | 'revoked';
 export type RateLimitPolicyName = 'burst' | 'authFailure' | 'read' | 'write' | 'sensitive';
 export type SecurityEventSeverity = 'info' | 'warning' | 'high' | 'critical';
+export type SecurityAlertDeliveryState = 'pending' | 'inflight' | 'delivered' | 'dead-letter';
 
 export interface HashedApiCredentialRecord {
   keyId: string;
@@ -101,6 +102,7 @@ export interface SecurityArchiveIntegrity {
 
 export interface SecurityArchiveHealth {
   status: 'ready' | 'unavailable' | 'disabled';
+  archiveOnlyStatus?: 'ready' | 'unavailable' | 'disabled';
   enabled: boolean;
   required: boolean;
   mode: 'shared-file-encrypted-hash-chain' | 'disabled';
@@ -128,6 +130,57 @@ export interface SecurityArchiveExport {
   nextSequence: number;
 }
 
+export interface SecurityAlertOutboxHealth {
+  status: 'ready' | 'degraded' | 'unavailable';
+  mode: 'shared-file-durable-outbox';
+  durable: true;
+  distributed: true;
+  directory?: string;
+  pending: number;
+  inflight: number;
+  deadLetters: number;
+  oldestPendingAt: string | null;
+  error?: string;
+}
+
+export interface SecurityAlertDeliveryHealth {
+  status: 'ready' | 'degraded' | 'unavailable' | 'disabled';
+  enabled: boolean;
+  required: boolean;
+  mode: 'signed-webhook-durable-outbox' | 'disabled';
+  endpointOrigin?: string;
+  minimumSeverity?: SecurityEventSeverity;
+  includedTypes?: string[];
+  maxAttempts?: number;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+  running?: boolean;
+  schedulerStarted?: boolean;
+  delivered?: number;
+  failed?: number;
+  lastCycleAt?: string | null;
+  lastSuccessAt?: string | null;
+  lastError?: string | null;
+  outbox?: SecurityAlertOutboxHealth;
+  enqueueFailures?: number;
+  lastEnqueueError?: string | null;
+}
+
+export interface SecurityAlertDeadLetter {
+  version: 1;
+  deliveryId: string;
+  state: 'dead-letter';
+  createdAt: string;
+  updatedAt: string;
+  deadLetteredAt: string;
+  attempts: number;
+  lastAttemptAt: string;
+  lastStatus: number | null;
+  lastError: string | null;
+  deadLetterReason: string;
+  event: SecurityEvent;
+}
+
 export interface SecurityTelemetrySummary {
   status: 'ready' | 'unavailable';
   mode: 'bounded-memory-hash-chain' | 'bounded-memory-plus-encrypted-archive';
@@ -141,6 +194,7 @@ export interface SecurityTelemetrySummary {
   countsBySeverity: Record<string, number>;
   integrity: { valid: boolean; retainedEvents: number; failedEventId: string | null; headHash: string | null; };
   archive: SecurityArchiveHealth;
+  alertDelivery: SecurityAlertDeliveryHealth;
 }
 
 export interface ApiSecurityStatus {
