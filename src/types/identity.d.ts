@@ -1,7 +1,7 @@
 import type { AuditRole, AuditPrincipal } from './workforceAudit.d.ts';
 
 export type IdentityEntitlementMode = 'disabled' | 'observe' | 'enforce';
-export type IdentityEntitlementStatus = 'active' | 'suspended' | 'unprovisioned';
+export type IdentityEntitlementStatus = 'active' | 'suspended' | 'unprovisioned' | 'mismatched' | 'review_overdue';
 
 export interface IdentityEntitlement {
   id: string;
@@ -34,7 +34,8 @@ export interface IdentityEntitlementEvent {
 }
 
 export interface IdentityEntitlementHealth {
-  status: 'ready' | 'degraded' | 'unavailable' | 'disabled';
+  status: 'ready' | 'unavailable' | 'disabled';
+  reviewStatus?: 'ready' | 'attention' | 'disabled';
   enabled: boolean;
   required: boolean;
   mode: IdentityEntitlementMode;
@@ -58,6 +59,8 @@ export interface FederatedAuditPrincipal extends AuditPrincipal {
   entitlementId?: string;
   entitlementVersion?: number;
   entitlementReviewBy?: string;
+  approvedTenantId?: string;
+  approvedRole?: AuditRole;
 }
 
 export interface ScimCredentialHealth {
