@@ -87,7 +87,11 @@ export function createAuthenticationGateway({
   function credentialHealth() {
     const apiKeys = apiKeyController?.credentialHealth?.() ?? disabledApiKeyHealth();
     const oidc = oidcAuthenticator?.health?.() ?? disabledOidcHealth();
-    const identityEntitlements = entitlements.health?.() ?? { status: 'disabled', enabled: false, required: false, mode: 'disabled' };
+    const rawEntitlements = entitlements.health?.() ?? { status: 'disabled', enabled: false, required: false, mode: 'disabled' };
+    const reviewAttention = ['attention', 'degraded'].includes(rawEntitlements.status);
+    const identityEntitlements = reviewAttention
+      ? { ...rawEntitlements, status: 'ready', reviewStatus: rawEntitlements.status }
+      : rawEntitlements;
     const enabledHealth = [
       ...(authenticationMode !== 'oidc' ? [apiKeys.status] : []),
       ...(authenticationMode !== 'api-key' ? [oidc.status] : []),
