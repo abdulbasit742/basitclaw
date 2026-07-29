@@ -1,6 +1,7 @@
 export type RiskTier = 'low' | 'medium' | 'high' | 'critical';
 export type FindingStatus = 'draft' | 'open' | 'management-response' | 'verified' | 'closed';
 export type AuditRole = 'audit_viewer' | 'auditor' | 'audit_manager' | 'compliance_admin';
+export type BackupKind = 'manual' | 'scheduled' | 'safety';
 
 export interface AuditPrincipal {
   subject: string;
@@ -70,6 +71,51 @@ export interface WorkforceAuditSnapshot {
   governanceEvents: GovernanceEvent[];
 }
 
+export interface BackupManifest {
+  format: 'basitclaw-workforce-audit-backup';
+  version: 1;
+  backupId: string;
+  tenantHash: string;
+  createdAt: string;
+  createdOrder: number;
+  snapshotWrittenAt: string;
+  keyId: string;
+  checksumSha256: string;
+  sizeBytes: number;
+  kind: BackupKind;
+  prunedBackupIds?: string[];
+}
+
+export interface BackupVerification extends BackupManifest {
+  valid: true;
+  summary: {
+    engagementCount: number;
+    findingCount: number;
+    governanceEventCount: number;
+    governanceHeadHash: string | null;
+  };
+}
+
+export interface RestorePreview {
+  dryRun: true;
+  backup: BackupVerification;
+  current: {
+    engagementCount: number;
+    findingCount: number;
+    governanceEventCount: number;
+    governanceHeadHash: string | null;
+  };
+}
+
+export interface BackupHealth {
+  status: 'ready' | 'unavailable';
+  mode: 'encrypted-file-backup';
+  directory: string;
+  retention: number;
+  tenantDirectoryCount: number;
+  error?: string;
+}
+
 export interface PersistenceHealth {
   status: 'ready' | 'unavailable';
   mode: 'encrypted-file';
@@ -77,5 +123,6 @@ export interface PersistenceHealth {
   primaryKeyId: string;
   configuredKeyIds: string[];
   persistedTenantCount: number;
+  backups: BackupHealth;
   error?: string;
 }

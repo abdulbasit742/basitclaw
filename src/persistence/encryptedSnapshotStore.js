@@ -21,6 +21,7 @@ import { dirname, resolve } from 'node:path';
 const FORMAT = 'basitclaw-workforce-audit-snapshot';
 const ENVELOPE_VERSION = 1;
 const ALGORITHM = 'aes-256-gcm';
+const MAX_ENCRYPTED_BYTES = 64 * 1024 * 1024;
 
 export class PersistenceError extends Error {
   constructor(message, details = {}, cause) {
@@ -42,36 +43,41 @@ export function createEncryptedSnapshotStore({
   if (!keyring.has(primaryKeyId)) throw new TypeError('primaryKeyId must identify a configured encryption key.');
 
   function load(tenantId) {
+    return readEncrypted(tenantId)?.snapshot ?? null;
+  }
+
+  function readEncrypted(tenantId) {
     validateTenantId(tenantId);
     const path = tenantPath(absoluteDirectory, tenantId);
     if (!existsSync(path)) return null;
     try {
-      const envelope = JSON.parse(readFileSync(path, 'utf8'));
-      validateEnvelope(envelope, tenantId);
-      const key = keyring.get(envelope.keyId);
-      if (!key) {
-        throw new PersistenceError('The snapshot encryption key is not available.', {
-          tenantId,
-          keyId: envelope.keyId,
-          operation: 'load'
-        });
-      }
-      const aad = associatedData(envelope);
-      const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(envelope.iv, 'base64'));
-      decipher.setAAD(Buffer.from(aad));
-      decipher.setAuthTag(Buffer.from(envelope.authTag, 'base64'));
-      const plaintext = Buffer.concat([
-        decipher.update(Buffer.from(envelope.ciphertext, 'base64')),
-        decipher.final()
-      ]).toString('utf8');
-      const snapshot = JSON.parse(plaintext);
-      validateSnapshot(snapshot, tenantId);
-      return structuredClone(snapshot);
+      const serialized = readFileSync(path, 'utf8');
+      return { ...inspectEncrypted(tenantId, serialized), serialized, path };
     } catch (error) {
       if (error instanceof PersistenceError) throw error;
       throw new PersistenceError('Encrypted workforce-audit state could not be loaded.', {
         tenantId,
         operation: 'load'
+      }, error);
+    }
+  }
+
+  function inspectEncrypted(tenantId, serialized) {
+    validateTenantId(tenantId);
+    try {
+      const text = normaliseSerializedEnvelope(serialized);
+      const envelope = JSON.parse(text);
+      validateEnvelope(envelope, tenantId);
+      const snapshot = decryptEnvelope(envelope, tenantId, keyring);
+      return {
+        envelope: structuredClone(envelope),
+        snapshot: structuredClone(snapshot)
+      };
+    } catch (error) {
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError('Encrypted workforce-audit state could not be inspected.', {
+        tenantId,
+        operation: 'inspect'
       }, error);
     }
   }
@@ -87,7 +93,7 @@ export function createEncryptedSnapshotStore({
       version: ENVELOPE_VERSION,
       algorithm: ALGORITHM,
       keyId: primaryKeyId,
-      tenantHash: tenantHash(tenantId),
+      tenantHash: hashTenantIdentifier(tenantId),
       writtenAt: now().toISOString(),
       iv: iv.toString('base64')
     };
@@ -103,27 +109,24 @@ export function createEncryptedSnapshotStore({
       ciphertext: ciphertext.toString('base64')
     };
     const targetPath = tenantPath(absoluteDirectory, tenantId);
-    const temporaryPath = `${targetPath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-    let fileDescriptor;
-    try {
-      fileDescriptor = openSync(temporaryPath, 'wx', 0o600);
-      writeFileSync(fileDescriptor, `${JSON.stringify(envelope)}\n`, 'utf8');
-      fsyncSync(fileDescriptor);
-      closeSync(fileDescriptor);
-      fileDescriptor = undefined;
-      renameSync(temporaryPath, targetPath);
-      fsyncDirectory(dirname(targetPath));
-      return { tenantId, keyId: primaryKeyId, writtenAt: envelope.writtenAt, path: targetPath };
-    } catch (error) {
-      if (fileDescriptor !== undefined) {
-        try { closeSync(fileDescriptor); } catch {}
-      }
-      try { unlinkSync(temporaryPath); } catch {}
-      throw new PersistenceError('Encrypted workforce-audit state could not be saved.', {
-        tenantId,
-        operation: 'save'
-      }, error);
-    }
+    atomicWrite(targetPath, `${JSON.stringify(envelope)}\n`, tenantId, 'save');
+    return { tenantId, keyId: primaryKeyId, writtenAt: envelope.writtenAt, path: targetPath };
+  }
+
+  function writeEncrypted(tenantId, serialized) {
+    validateTenantId(tenantId);
+    const inspected = inspectEncrypted(tenantId, serialized);
+    mkdirSync(absoluteDirectory, { recursive: true, mode: 0o700 });
+    const targetPath = tenantPath(absoluteDirectory, tenantId);
+    const text = `${normaliseSerializedEnvelope(serialized).trim()}\n`;
+    atomicWrite(targetPath, text, tenantId, 'restore');
+    return {
+      tenantId,
+      keyId: inspected.envelope.keyId,
+      writtenAt: inspected.envelope.writtenAt,
+      path: targetPath,
+      snapshot: inspected.snapshot
+    };
   }
 
   function health() {
@@ -151,7 +154,16 @@ export function createEncryptedSnapshotStore({
     }
   }
 
-  return { load, save, health, directory: absoluteDirectory, primaryKeyId };
+  return {
+    load,
+    save,
+    readEncrypted,
+    inspectEncrypted,
+    writeEncrypted,
+    health,
+    directory: absoluteDirectory,
+    primaryKeyId
+  };
 }
 
 export function createEncryptedSnapshotStoreFromEnvironment(env = process.env) {
@@ -172,6 +184,71 @@ export function createEncryptedSnapshotStoreFromEnvironment(env = process.env) {
   const primaryKeyId = env.WORKFORCE_AUDIT_PRIMARY_KEY_ID;
   if (!primaryKeyId) throw new Error('WORKFORCE_AUDIT_PRIMARY_KEY_ID is required when encryption keys are configured.');
   return createEncryptedSnapshotStore({ directory, keys, primaryKeyId });
+}
+
+export function hashTenantIdentifier(tenantId) {
+  validateTenantId(tenantId);
+  return createHash('sha256').update(tenantId).digest('hex');
+}
+
+function decryptEnvelope(envelope, tenantId, keyring) {
+  const key = keyring.get(envelope.keyId);
+  if (!key) {
+    throw new PersistenceError('The snapshot encryption key is not available.', {
+      tenantId,
+      keyId: envelope.keyId,
+      operation: 'decrypt'
+    });
+  }
+  try {
+    const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(envelope.iv, 'base64'));
+    decipher.setAAD(Buffer.from(associatedData(envelope)));
+    decipher.setAuthTag(Buffer.from(envelope.authTag, 'base64'));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(envelope.ciphertext, 'base64')),
+      decipher.final()
+    ]).toString('utf8');
+    const snapshot = JSON.parse(plaintext);
+    validateSnapshot(snapshot, tenantId);
+    return snapshot;
+  } catch (error) {
+    if (error instanceof PersistenceError) throw error;
+    throw new PersistenceError('Encrypted workforce-audit state could not be decrypted.', {
+      tenantId,
+      keyId: envelope.keyId,
+      operation: 'decrypt'
+    }, error);
+  }
+}
+
+function atomicWrite(targetPath, content, tenantId, operation) {
+  const temporaryPath = `${targetPath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  let fileDescriptor;
+  try {
+    fileDescriptor = openSync(temporaryPath, 'wx', 0o600);
+    writeFileSync(fileDescriptor, content, 'utf8');
+    fsyncSync(fileDescriptor);
+    closeSync(fileDescriptor);
+    fileDescriptor = undefined;
+    renameSync(temporaryPath, targetPath);
+    fsyncDirectory(dirname(targetPath));
+  } catch (error) {
+    if (fileDescriptor !== undefined) {
+      try { closeSync(fileDescriptor); } catch {}
+    }
+    try { unlinkSync(temporaryPath); } catch {}
+    throw new PersistenceError('Encrypted workforce-audit state could not be written.', {
+      tenantId,
+      operation
+    }, error);
+  }
+}
+
+function normaliseSerializedEnvelope(serialized) {
+  const text = Buffer.isBuffer(serialized) ? serialized.toString('utf8') : String(serialized ?? '');
+  if (!text.trim()) throw new TypeError('Encrypted snapshot envelope is empty.');
+  if (Buffer.byteLength(text, 'utf8') > MAX_ENCRYPTED_BYTES) throw new TypeError('Encrypted snapshot envelope exceeds the 64 MB limit.');
+  return text;
 }
 
 function normaliseKeyring(keys) {
@@ -201,7 +278,7 @@ function validateEnvelope(envelope, tenantId) {
   if (!envelope || envelope.format !== FORMAT || envelope.version !== ENVELOPE_VERSION || envelope.algorithm !== ALGORITHM) {
     throw new PersistenceError('Unsupported encrypted snapshot envelope.', { tenantId, operation: 'load' });
   }
-  if (envelope.tenantHash !== tenantHash(tenantId)) {
+  if (envelope.tenantHash !== hashTenantIdentifier(tenantId)) {
     throw new PersistenceError('Encrypted snapshot tenant binding is invalid.', { tenantId, operation: 'load' });
   }
   for (const field of ['keyId', 'writtenAt', 'iv', 'authTag', 'ciphertext']) {
@@ -224,11 +301,7 @@ function associatedData(envelope) {
 }
 
 function tenantPath(directory, tenantId) {
-  return resolve(directory, `${tenantHash(tenantId)}.snapshot.enc`);
-}
-
-function tenantHash(tenantId) {
-  return createHash('sha256').update(tenantId).digest('hex');
+  return resolve(directory, `${hashTenantIdentifier(tenantId)}.snapshot.enc`);
 }
 
 function validateTenantId(value) {

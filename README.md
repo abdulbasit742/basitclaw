@@ -2,7 +2,7 @@
 
 BasitClaw is a dependency-light Node.js workspace for enterprise workforce internal-audit assurance.
 
-Pass 1 established the HR audit universe, engagement planning, fieldwork placeholders, findings, provider readiness, APIs, and dashboard. Pass 2 added API-key authentication, role permissions, tenant isolation, and a tamper-evident governance ledger. Pass 3 adds encrypted durable snapshots, atomic commits, restart recovery, key identifiers for rotation, storage health reporting, and mutation rollback when persistence fails.
+Pass 1 established the HR audit universe, engagement planning, fieldwork placeholders, findings, provider readiness, APIs, and dashboard. Pass 2 added API-key authentication, role permissions, tenant isolation, and a tamper-evident governance ledger. Pass 3 added encrypted durable snapshots, atomic commits, restart recovery, key rotation support, and persistence rollback. Pass 4 adds encrypted recovery points, integrity manifests, retention, restore dry-runs, safety backups, and governed disaster-recovery operations.
 
 ## Requirements
 
@@ -29,9 +29,9 @@ Configure `WORKFORCE_AUDIT_API_KEYS` as a JSON array:
 [{"apiKey":"replace-with-a-long-random-key","subject":"audit-manager","tenantId":"tenant-acme","role":"audit_manager"}]
 ```
 
-Supported roles are `audit_viewer`, `auditor`, `audit_manager`, and `compliance_admin`. The authenticated principal determines the tenant; callers cannot override it.
+Supported roles are `audit_viewer`, `auditor`, `audit_manager`, and `compliance_admin`. Audit managers may create and verify recovery points. Only compliance administrators may execute a restore.
 
-## Encrypted persistence
+## Encrypted persistence and recovery
 
 Production requires a JSON keyring containing base64-encoded 32-byte keys and a primary key ID:
 
@@ -39,18 +39,34 @@ Production requires a JSON keyring containing base64-encoded 32-byte keys and a 
 WORKFORCE_AUDIT_ENCRYPTION_KEYS='{"2026-q3":"<base64-32-byte-key>","2026-q2":"<previous-base64-key>"}'
 WORKFORCE_AUDIT_PRIMARY_KEY_ID=2026-q3
 WORKFORCE_AUDIT_DATA_DIR=/var/lib/basitclaw/workforce-audit
+WORKFORCE_AUDIT_BACKUP_DIR=/var/lib/basitclaw/workforce-audit-backups
+WORKFORCE_AUDIT_BACKUP_RETENTION=30
 ```
 
-The primary key encrypts every new snapshot. Previous keys may remain in the keyring so older snapshots can be read and rewritten with the new primary key. Do not remove an old key until all tenant snapshots have been rewritten and verified.
+Primary snapshots and recovery points remain AES-256-GCM encrypted. Backup filenames use tenant hashes rather than tenant IDs. Every backup has a manifest containing its checksum, key ID, encrypted size, creation order, and retention class.
 
-Snapshots are tenant-separated, AES-256-GCM encrypted, bound to authenticated envelope metadata, written to a temporary file, fsynced, and atomically renamed. A failed durable write rolls back both the business mutation and its governance event.
+Restore is deliberately two-stage:
+
+1. Run a dry-run using the current governance head hash.
+2. Review the backup summary and integrity result.
+3. Submit the same governance head hash, `dryRun: false`, and the exact confirmation phrase `RESTORE <backupId>`.
+4. The service creates a safety backup before replacing the primary snapshot.
+5. The restored governance chain receives a `backup.restored` event referencing the safety backup.
+6. Any failure restores the original encrypted primary snapshot and in-memory governance state.
+
+## Recovery APIs
+
+- `GET /api/workforce-audit/backups`
+- `POST /api/workforce-audit/backups`
+- `POST /api/workforce-audit/backups/:backupId/verify`
+- `POST /api/workforce-audit/backups/:backupId/restore`
 
 ## Verification
 
-- `npm test` covers access control, audit rules, encrypted storage, key rotation, restart recovery, rollback, tenant isolation, governance integrity, and HTTP behaviour.
+- `npm test` covers access control, audit rules, encrypted storage, key rotation, restart recovery, backups, retention, checksum tampering, dry-run recovery, safety copies, role restrictions, and governance-chain restoration.
 - `npm run lint` performs syntax validation.
-- `npm run build` verifies the complete runtime boundary.
+- `npm run build` verifies the complete runtime and recovery boundary.
 
 ## Current production boundary
 
-The encrypted file store is suitable for a single application process with a durable filesystem. Multi-process deployment still requires a shared transactional database or distributed lock, central identity federation, managed key custody, automated backups, retention controls, rate limiting, and disaster-recovery exercises.
+The encrypted file and backup stores assume one writer process on a durable filesystem. Multi-process deployment still requires shared transactional persistence or distributed locking. Managed key custody, off-host backup replication, scheduled backup orchestration, rate limiting, retention policy approval, and regular disaster-recovery exercises remain deployment responsibilities.

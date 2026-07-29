@@ -1,46 +1,60 @@
 # Workforce audit governance boundary
 
-This module separates audit planning readiness from audit conclusions and enforces identity, tenant, durability, and traceability boundaries.
+This module separates audit planning readiness from audit conclusions and enforces identity, tenant, durability, traceability, backup, and recovery boundaries.
 
-## Identity and tenancy
+## Recovery permissions
 
-- Every `/api/workforce-audit/*` request requires `x-api-key`.
-- API keys resolve to a subject, tenant, and role.
-- The authenticated principal is the only source of tenant selection.
-- Every tenant receives a separate service instance and encrypted snapshot.
+| Role | List/verify backups | Create backups | Restore backups |
+|---|---:|---:|---:|
+| audit_viewer | No | No | No |
+| auditor | No | No | No |
+| audit_manager | Yes | Yes | No |
+| compliance_admin | Yes | Yes | Yes |
 
-## Durable mutation protocol
+## Backup protocol
 
-1. Validate the requested audit operation.
-2. Capture a business-state and governance-ledger checkpoint.
-3. Apply the business mutation and append the actor-attributed governance event.
-4. Encrypt the complete tenant snapshot using AES-256-GCM.
-5. Write with restrictive permissions to a unique temporary file.
-6. Fsync the file, atomically rename it, and attempt to fsync the directory.
-7. Return success only after the durable write completes.
-8. Restore both business state and governance history if persistence fails.
+1. Ensure the latest tenant state and governance chain are durably committed.
+2. Read and decrypt-validate the primary snapshot.
+3. Copy the encrypted envelope to the tenant-hashed backup directory.
+4. Write a manifest containing the backup ID, tenant hash, key ID, checksum, encrypted size, creation order, and backup kind.
+5. Fsync each file, atomically rename it, and attempt to fsync the directory.
+6. Enforce the configured per-tenant retention count.
+7. Append a `backup.created` governance event with actor, reason, checksum, key ID, and any pruned backup IDs.
 
-## Encryption and rotation
+Backup manifests contain operational metadata only. Audit business data remains encrypted inside the copied AES-256-GCM envelope.
 
-- Each envelope identifies the encryption key used.
-- The tenant ID is never used as a filename; a SHA-256 tenant hash selects the file.
-- Tenant hash, format, version, algorithm, key ID, write time, and IV are authenticated as GCM additional data.
-- Older keys may be retained for reads while a new primary key handles writes.
-- Production startup fails when encryption keys or a primary key ID are missing.
+## Restore protocol
 
-## Persistence APIs
+A restore request must include:
 
-- `GET /health` includes storage health and returns `503` when persistence is unavailable.
-- `GET /api/workforce-audit/persistence-health` exposes storage mode, active key ID, configured key IDs, and persisted tenant count to governance-authorised roles.
+- a reason containing 10 to 500 characters;
+- the current governance head hash;
+- a dry-run first;
+- for execution, `dryRun: false`;
+- the exact phrase `RESTORE <backupId>`;
+- a principal with `backup:restore`.
 
-## Existing audit guardrails
+The service rejects stale governance heads with `409 RECOVERY_CONFLICT`. Before an actual restore it creates a `safety` backup. The selected backup is checksum-verified, decrypted, tenant-bound, and governance-chain validated. After replacement, a `backup.restored` event records the source and safety backup. If any stage fails, the original encrypted primary file, business state, and governance events are restored.
 
-- Engagements require a valid audit-universe item, explicit scope, valid dates, a named lead auditor, and management approval.
-- Overlapping engagements for the same audit-universe item are blocked.
-- Fieldwork placeholders require an owner, reason, expiry date, and replacement evidence, with a maximum 60-day lifetime.
-- Findings require traceable evidence; placeholder references cannot support verified or closed status.
-- External providers remain blocked until independence, security review, data-processing terms, delivery capacity, and current due diligence are satisfactory.
+## Recovery APIs
+
+- `GET /api/workforce-audit/backups`
+- `POST /api/workforce-audit/backups`
+- `POST /api/workforce-audit/backups/:backupId/verify`
+- `POST /api/workforce-audit/backups/:backupId/restore`
+
+## Error model
+
+- `404 BACKUP_NOT_FOUND`: the requested recovery point is absent.
+- `409 BACKUP_INTEGRITY_FAILED`: checksum, encryption, tenant binding, or snapshot validation failed.
+- `409 RECOVERY_CONFLICT`: the supplied governance head is stale or missing.
+- `503 BACKUP_UNAVAILABLE`: the backup subsystem cannot safely complete the operation.
+- `503 PERSISTENCE_UNAVAILABLE`: the primary encrypted snapshot cannot be committed.
+
+## Existing durable mutation protocol
+
+Business mutations and their governance events are committed together. The service returns success only after the encrypted primary snapshot is fsynced and atomically renamed. A failed write rolls back both business state and governance history.
 
 ## Deployment limitation
 
-The current atomic file store assumes one writer process. Horizontal scaling requires a transactional shared persistence layer or a proven distributed locking protocol.
+The file store assumes one writer process. Horizontal scaling requires a transactional shared persistence layer or proven distributed locking. Backups should also be replicated off-host, monitored, retention-approved, and exercised through scheduled disaster-recovery tests.
