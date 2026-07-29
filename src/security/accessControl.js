@@ -4,12 +4,12 @@ const ROLE_PERMISSIONS = Object.freeze({
   audit_viewer: ['audit:read'],
   auditor: ['audit:read', 'fieldwork:write', 'finding:write'],
   audit_manager: [
-    'audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read',
+    'audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read', 'evidence:scan',
     'backup:read', 'backup:write', 'replica:read', 'replica:write', 'resilience:read', 'drill:run',
     'coordination:read', 'privileged:request', 'privileged:read'
   ],
   compliance_admin: [
-    'audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read',
+    'audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read', 'evidence:scan',
     'backup:read', 'backup:write', 'backup:restore', 'replica:read', 'replica:write',
     'resilience:read', 'resilience:run', 'drill:run', 'coordination:read', 'security:read',
     'privileged:request', 'privileged:read', 'privileged:approve', 'privileged:revoke',
