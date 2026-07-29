@@ -42,10 +42,19 @@ export function createSecurityArchiveKeyLifecycle({
       total: 0
     }]));
     const missingKeyIds = new Set();
-    const envelopeKeyIds = new Set();
 
+    const anchorStored = files.readJson(files.anchorPath);
+    const anchor = anchorStored ? verifySignedRecord(anchorStored, codec.signAnchor, 'retention anchor') : {
+      version: 1, sequence: 0, hash: null, prunedAt: null
+    };
+    if (anchorStored) increment(references, anchor.signingKeyId, 'retentionAnchor');
+
+    let expectedSequence = anchor.sequence + 1;
+    let previousHash = anchor.hash;
     for (const { envelope } of files.readAll()) {
-      envelopeKeyIds.add(String(envelope?.keyId ?? ''));
+      if (envelope.sequence !== expectedSequence || envelope.previousHash !== previousHash) {
+        throw new Error('The security archive sequence or hash link is invalid during key lifecycle inspection.');
+      }
       try {
         codec.verifyEnvelope(envelope);
         codec.open(envelope);
@@ -54,29 +63,27 @@ export function createSecurityArchiveKeyLifecycle({
         if (error.keyId) missingKeyIds.add(error.keyId);
         else throw error;
       }
+      expectedSequence += 1;
+      previousHash = envelope.hash;
     }
 
-    const anchorStored = files.readJson(files.anchorPath);
-    if (anchorStored) {
-      const { signature, ...anchor } = anchorStored;
-      const signingKeyId = codec.identifySignedKey(anchor, signature, codec.signAnchor, anchor.signingKeyId ?? null);
-      if (!signingKeyId) throw new Error('The security archive retention anchor cannot be verified by the configured keyring.');
-      increment(references, signingKeyId, 'retentionAnchor');
+    const head = files.readJson(files.headPath);
+    if (head) {
+      if (head.sequence !== expectedSequence - 1 || head.hash !== previousHash) {
+        throw new Error('The security archive head does not match retained evidence during key lifecycle inspection.');
+      }
+    } else if (expectedSequence - 1 !== anchor.sequence) {
+      throw new Error('The security archive head is missing while retained evidence exists.');
     }
 
     const pruneStored = files.readJson(files.prunePlanPath);
     if (pruneStored) {
-      const { signature, ...plan } = pruneStored;
-      const signingKeyId = codec.identifySignedKey(plan, signature, codec.signPrunePlan, plan.signingKeyId ?? null);
-      if (!signingKeyId) throw new Error('The security archive prune journal cannot be verified by the configured keyring.');
-      increment(references, signingKeyId, 'pruneJournal');
+      const plan = verifySignedRecord(pruneStored, codec.signPrunePlan, 'prune journal');
+      increment(references, plan.signingKeyId, 'pruneJournal');
     }
 
     for (const usage of Object.values(references)) {
       usage.total = usage.envelopes + usage.retentionAnchor + usage.pruneJournal;
-    }
-    for (const envelopeKeyId of envelopeKeyIds) {
-      if (envelopeKeyId && !codec.hasKey(envelopeKeyId)) missingKeyIds.add(envelopeKeyId);
     }
 
     const retirementSafeKeyIds = codec.keyIds.filter((id) => id !== codec.primaryKeyId && references[id].total === 0);
@@ -94,6 +101,13 @@ export function createSecurityArchiveKeyLifecycle({
       rotationReady: !singleKey && missingKeyIds.size === 0,
       inspectedAt: now().toISOString()
     };
+  }
+
+  function verifySignedRecord(stored, signer, label) {
+    const { signature, ...value } = stored ?? {};
+    const signingKeyId = codec.identifySignedKey(value, signature, signer, value.signingKeyId ?? null);
+    if (!signingKeyId) throw new Error(`The security archive ${label} cannot be verified by the configured keyring.`);
+    return { ...value, signingKeyId };
   }
 
   function status() {
