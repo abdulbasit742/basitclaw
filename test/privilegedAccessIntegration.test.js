@@ -8,7 +8,10 @@ import { resolve } from 'node:path';
 import { permissionsForRole } from '../src/security/accessControl.js';
 import { createAuthenticationGateway } from '../src/security/authenticationGateway.js';
 import { createFederatedApp } from '../src/federatedServer.js';
-import { createPrivilegedAccessRegistry } from '../src/security/privilegedAccessRegistry.js';
+import {
+  PrivilegedAccessStoreError,
+  createPrivilegedAccessRegistry
+} from '../src/security/privilegedAccessRegistry.js';
 
 const key = Buffer.alloc(32, 13).toString('base64');
 const principal = (subject) => ({
@@ -31,10 +34,21 @@ function limiter() {
   };
 }
 
-function innerFactory() {
-  const server = createServer((_req, res) => {
+function innerFactory({ accessController } = {}) {
+  const server = createServer((req, res) => {
+    let effective = null;
+    if (accessController) {
+      const authenticated = accessController.authenticate(req);
+      effective = accessController.authorise(authenticated, 'security:read');
+    }
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ success: true, data: { reachedInnerServer: true } }));
+    res.end(JSON.stringify({
+      success: true,
+      data: {
+        reachedInnerServer: true,
+        privilegedRequestId: effective?.privilegedAccess?.requestId ?? null
+      }
+    }));
   });
   server.resilienceScheduler = { start() {}, stop() {} };
   server.apiSecurity = {};
@@ -75,14 +89,41 @@ test('authentication gateway blocks protected permissions until a grant is activ
   assert.equal(gateway.authorise(requester, 'security:read').privilegedAccess.requestId, request.id);
 });
 
-test('federated server pre-authorises protected routes and exposes management APIs', async () => {
+test('tenant enumeration survives privileged-store failure while health remains degraded', () => {
+  const gateway = createAuthenticationGateway({
+    mode: 'api-key',
+    apiKeyController: {
+      authenticate: async () => principal('api-user'),
+      tenantIds: () => ['tenant-api'],
+      credentialHealth: () => ({ status: 'ready' }),
+      principalCount: 1
+    },
+    entitlementRegistry: {
+      enforce: (value) => value,
+      tenantIds: () => ['tenant-scim'],
+      health: () => ({ status: 'ready', required: false })
+    },
+    privilegedAccessRegistry: {
+      mode: 'enforce',
+      authorise: (value) => value,
+      tenantIds() { throw new PrivilegedAccessStoreError(); },
+      health: () => ({ status: 'unavailable', required: true })
+    }
+  });
+  assert.deepEqual(gateway.tenantIds().sort(), ['tenant-api', 'tenant-scim']);
+  assert.equal(gateway.credentialHealth().status, 'unavailable');
+});
+
+test('federated server pre-authorises protected routes and reuses the effective principal', async () => {
   const privilegedAccess = await registry();
   const requester = principal('requester');
+  let authoriseCalls = 0;
   const gateway = {
     mode: 'oidc',
     apiKeyController: null,
     authenticate: async () => requester,
     authorise: (value, permission) => {
+      authoriseCalls += 1;
       if (!value.permissions.includes(permission)) throw new Error('permission missing');
       return privilegedAccess.authorise(value, permission);
     },
@@ -116,6 +157,12 @@ test('federated server pre-authorises protected routes and exposes management AP
     assert.equal(invalid.status, 400);
     assert.equal((await invalid.json()).code, 'PRIVILEGED_ACCESS_INPUT_INVALID');
 
+    const invalidFilter = await fetch(`${origin}/api/workforce-audit/privileged-access/requests?subject=x`, {
+      headers: { authorization: 'Bearer token' }
+    });
+    assert.equal(invalidFilter.status, 400);
+    assert.equal((await invalidFilter.json()).code, 'PRIVILEGED_ACCESS_INPUT_INVALID');
+
     const created = await fetch(`${origin}/api/workforce-audit/privileged-access/requests`, {
       method: 'POST',
       headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
@@ -129,11 +176,49 @@ test('federated server pre-authorises protected routes and exposes management AP
     let approved = privilegedAccess.approve(request.id, principal('approver-one'), { expectedVersion: request.version, comment: 'Validated the incident and requested evidence scope.' });
     approved = privilegedAccess.approve(request.id, principal('approver-two'), { expectedVersion: approved.version, comment: 'Independent approval for the time-boxed investigation.' });
 
+    authoriseCalls = 0;
     const allowed = await fetch(`${origin}/api/workforce-audit/security-status`, { headers: { authorization: 'Bearer token' } });
     assert.equal(allowed.status, 200);
-    assert.equal((await allowed.json()).data.reachedInnerServer, true);
+    const payload = await allowed.json();
+    assert.equal(payload.data.reachedInnerServer, true);
+    assert.equal(payload.data.privilegedRequestId, request.id);
+    assert.equal(authoriseCalls, 1);
     assert.ok(events.some((event) => event.type === 'privileged_access.requested'));
   } finally {
     app.close();
   }
+});
+
+test('api security exposes live privileged health instead of a startup snapshot', () => {
+  let state = 'ready';
+  const privilegedAccess = {
+    mode: 'disabled',
+    authorise: (value) => value,
+    tenantIds: () => [],
+    health: () => ({ status: state, required: false })
+  };
+  const gateway = {
+    mode: 'api-key', apiKeyController: { authenticate: async () => principal('user') },
+    authenticate: async () => principal('user'), authorise: (value) => value,
+    tenantIds: () => [], credentialHealth: () => ({ status: 'ready' }), principalCount: 1
+  };
+  const handler = {
+    matches: () => false,
+    handle: async () => undefined,
+    health: () => ({ status: state })
+  };
+  const app = createFederatedApp({
+    privilegedAccess,
+    privilegedAccessHandler: handler,
+    authenticationGateway: gateway,
+    rateLimiter: limiter(),
+    registry: {},
+    securityArchive: {},
+    securityTelemetry: { record() {} },
+    innerAppFactory: () => innerFactory()
+  });
+  assert.equal(app.apiSecurity.privilegedAccess.status, 'ready');
+  state = 'unavailable';
+  assert.equal(app.apiSecurity.privilegedAccess.status, 'unavailable');
+  app.close();
 });
