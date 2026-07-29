@@ -11,6 +11,13 @@ import {
   createIdentityEntitlementRegistryFromEnvironment
 } from './security/identityEntitlementRegistry.js';
 import { OidcUnavailableError } from './security/oidcAuthenticator.js';
+import { createPrivilegedAccessHandler } from './security/privilegedAccessHandler.js';
+import {
+  PrivilegedAccessConflictError,
+  PrivilegedAccessError,
+  PrivilegedAccessStoreError,
+  createPrivilegedAccessRegistryFromEnvironment
+} from './security/privilegedAccessRegistry.js';
 import { createAdaptiveRateLimiterFromEnvironment } from './security/rateLimiter.js';
 import { createScimAccessControllerFromEnvironment } from './security/scimAccessController.js';
 import { createScimHandler } from './security/scimHandler.js';
@@ -22,10 +29,19 @@ export function createFederatedApp({
   env = process.env,
   registry = createRuntimeWorkforceAuditRegistry(),
   identityEntitlements = createIdentityEntitlementRegistryFromEnvironment(env),
-  authenticationGateway = createAuthenticationGatewayFromEnvironment(env, { entitlementRegistry: identityEntitlements }),
+  privilegedAccess = createPrivilegedAccessRegistryFromEnvironment(env),
+  authenticationGateway = createAuthenticationGatewayFromEnvironment(env, {
+    entitlementRegistry: identityEntitlements,
+    privilegedAccessRegistry: privilegedAccess
+  }),
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
   securityArchive = createSecurityEventArchiveFromEnvironment(env),
   securityTelemetry = createSecurityTelemetryFromEnvironment(env, { archive: securityArchive }),
+  privilegedAccessHandler = createPrivilegedAccessHandler({
+    registry: privilegedAccess,
+    authenticationGateway,
+    securityTelemetry
+  }),
   scimAccessController = String(env.WORKFORCE_AUDIT_SCIM_ENABLED ?? 'false') === 'true'
     ? createScimAccessControllerFromEnvironment(env)
     : null,
@@ -64,14 +80,22 @@ export function createFederatedApp({
       }, randomUUID(), {}, 'application/scim+json; charset=utf-8');
     }
     if (!url.pathname.startsWith('/api/workforce-audit/')) return innerHandler(req, res);
+
     const authorization = headerValue(req.headers.authorization);
-    const requiresPreAuthentication = Boolean(authorization) || authenticationGateway.mode === 'oidc';
+    const protectedPermission = protectedPermissionFor(req.method, url.pathname);
+    const privilegedRoute = privilegedAccessHandler.matches(url.pathname);
+    const requiresPreAuthentication = Boolean(authorization)
+      || authenticationGateway.mode === 'oidc'
+      || Boolean(protectedPermission)
+      || privilegedRoute;
     if (!requiresPreAuthentication) return innerHandler(req, res);
 
     const requestId = randomUUID();
     const clientAddress = typeof rateLimiter.clientAddress === 'function' ? rateLimiter.clientAddress(req) : 'unknown';
     try {
       const principal = await authenticationGateway.authenticate(req);
+      if (privilegedRoute) return privilegedAccessHandler.handle(req, res, principal, requestId);
+      if (protectedPermission) privilegedAccess.authorise(principal, protectedPermission);
       authenticatedRequests.set(req, principal);
       return innerHandler(req, res);
     } catch (error) {
@@ -95,6 +119,28 @@ export function createFederatedApp({
         });
         return sendJson(res, 503, {
           success: false, error: error.message, code: error.code, meta: { requestId }
+        }, requestId, { 'retry-after': '30' });
+      }
+      if (error instanceof PrivilegedAccessError || error instanceof PrivilegedAccessConflictError) {
+        safeRecordSecurityEvent(securityTelemetry, {
+          type: error.code.startsWith('BREAK_GLASS') ? 'privileged_access.break_glass_denied' : 'privileged_access.denied',
+          severity: error.code.startsWith('BREAK_GLASS') ? 'critical' : 'high',
+          outcome: 'denied', requestId, clientAddress,
+          method: req.method, route: url.pathname,
+          details: { reason: error.code, permission: protectedPermission }
+        });
+        return sendJson(res, error.statusCode ?? 403, {
+          success: false, error: error.message, code: error.code, details: error.details, meta: { requestId }
+        }, requestId);
+      }
+      if (error instanceof PrivilegedAccessStoreError) {
+        safeRecordSecurityEvent(securityTelemetry, {
+          type: 'privileged_access.unavailable', severity: 'critical', outcome: 'failed', requestId,
+          clientAddress, method: req.method, route: url.pathname,
+          details: { reason: error.code }
+        });
+        return sendJson(res, 503, {
+          success: false, error: error.message, code: error.code, details: error.details, meta: { requestId }
         }, requestId, { 'retry-after': '30' });
       }
       if (error instanceof AuthenticationError) {
@@ -168,9 +214,17 @@ export function createFederatedApp({
   server.once('listening', () => inner.resilienceScheduler?.start?.());
   server.once('close', () => inner.resilienceScheduler?.stop?.());
   server.resilienceScheduler = inner.resilienceScheduler;
-  server.apiSecurity = { ...inner.apiSecurity, authenticationGateway, identityEntitlements, scim: scimHandler?.health?.() ?? { status: 'disabled' } };
+  server.apiSecurity = {
+    ...inner.apiSecurity,
+    authenticationGateway,
+    identityEntitlements,
+    privilegedAccess: privilegedAccessHandler.health(),
+    scim: scimHandler?.health?.() ?? { status: 'disabled' }
+  };
   server.authenticationGateway = authenticationGateway;
   server.identityEntitlements = identityEntitlements;
+  server.privilegedAccess = privilegedAccess;
+  server.privilegedAccessHandler = privilegedAccessHandler;
   server.scimHandler = scimHandler;
   return server;
 }
@@ -191,6 +245,18 @@ function createTrustedAccessController(gateway, authenticatedRequests) {
     credentialHealth: () => gateway.credentialHealth(),
     principalCount: gateway.principalCount
   };
+}
+
+function protectedPermissionFor(method, pathname) {
+  if (method === 'POST' && /^\/api\/workforce-audit\/backups\/[^/]+\/restore$/.test(pathname)) return 'backup:restore';
+  if (method === 'POST' && pathname === '/api/workforce-audit/resilience-cycle') return 'resilience:run';
+  if (method === 'GET' && [
+    '/api/workforce-audit/security-status',
+    '/api/workforce-audit/security-events',
+    '/api/workforce-audit/security-archive-events',
+    '/api/workforce-audit/security-archive-integrity'
+  ].includes(pathname)) return 'security:read';
+  return null;
 }
 
 function challenge(mode) {
