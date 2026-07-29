@@ -41,6 +41,9 @@ await requireMarkers('src/evidence/evidenceHandler.js', 'Screening API', [
   'evidence.quarantine_released'
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'Screened runtime', [
+  'createExternalScanAwareApp'
+]);
+await requireMarkers('src/evidence/externalScanEvidenceRegistry.js', 'Composed screening registry', [
   'createScreenedEvidenceRegistryFromEnvironment'
 ]);
 await requireMarkers('docs/evidence-screening.md', 'Screening runbook', [
