@@ -10,6 +10,7 @@ const requiredFiles = [
   'test/externalScanJobLifecycle.test.js',
   'test/externalScanJobServer.test.js',
   'docs/external-scan-delivery.md',
+  'docs/external-scan-delivery-lifecycle.md',
   'config/evidence-screening.production.env.example'
 ];
 for (const file of requiredFiles) await access(new URL(`../${file}`, import.meta.url));
@@ -77,9 +78,13 @@ await requireMarkers('docs/external-scan-delivery.md', 'Scanner delivery runbook
   'never auto-releases',
   'private key',
   'crash-interrupted',
-  'dead-letter job',
+  'dead-letter job'
+]);
+await requireMarkers('docs/external-scan-delivery-lifecycle.md', 'Scanner delivery lifecycle runbook', [
   'claim byte budget',
-  'primaryPublicKeyId'
+  'primaryPublicKeyId',
+  'attestation_timeout',
+  'EXTERNAL_SCAN_CLAIM_BUDGET_EXCEEDED'
 ]);
 await requireMarkers('config/evidence-screening.production.env.example', 'Production scanner delivery configuration', [
   'WORKFORCE_AUDIT_EXTERNAL_SCAN_DELIVERY_MODE=pull',
