@@ -26,6 +26,10 @@ const EVIDENCE_ID = /^EVD-[a-f0-9]{32}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const ATTESTATION_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{7,127}$/;
 const NONCE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{15,127}$/;
+const ATTESTATION_FIELDS = new Set([
+  'attestationId', 'tenantId', 'evidenceId', 'version', 'contentSha256', 'verdict',
+  'scannedAt', 'engine', 'engineVersion', 'definitionsVersion', 'findings'
+]);
 
 export class ExternalScanAuthenticationError extends Error {
   constructor(message = 'External scanner authentication failed.', details = {}) {
@@ -172,7 +176,13 @@ export function createExternalScanAttestationRegistry({
   }
 
   function latest(tenantId, evidenceId, version) {
-    return list(tenantId, { evidenceId, version, limit: 1 })[0] ?? null;
+    const tenant = identifier(tenantId, 'tenantId');
+    const id = evidenceIdentifier(evidenceId);
+    const number = integer(version, 'version', 1, 1_000_000);
+    const rows = loadSafe(tenant).attestations.filter((entry) => entry.evidenceId === id && entry.version === number);
+    if (!rows.length) return null;
+    rows.sort((left, right) => compareAttestationRecency(right, left));
+    return publicAttestation(rows[0]);
   }
 
   function requireCleanForRelease(tenantId, evidenceId, version, contentSha256) {
@@ -198,7 +208,11 @@ export function createExternalScanAttestationRegistry({
   function tenantStatus(tenantId) {
     const index = loadSafe(identifier(tenantId, 'tenantId'));
     const latestByVersion = new Map();
-    for (const entry of index.attestations) latestByVersion.set(`${entry.evidenceId}:${entry.version}`, entry);
+    for (const entry of index.attestations) {
+      const key = `${entry.evidenceId}:${entry.version}`;
+      const current = latestByVersion.get(key);
+      if (!current || compareAttestationRecency(entry, current) > 0) latestByVersion.set(key, entry);
+    }
     const values = [...latestByVersion.values()];
     return {
       status: values.some((entry) => entry.verdict !== 'clean') ? 'attention' : 'ready',
@@ -252,7 +266,6 @@ export function createExternalScanAttestationRegistry({
     mode: selectedMode,
     requiredForRelease: required,
     acceptSigned,
-    record,
     list,
     latest,
     requireCleanForRelease,
@@ -313,6 +326,9 @@ function parseProviders(input) {
 
 function normaliseAttestation(input, authentication, now) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new EvidenceValidationError('External scan attestation must be an object.', { field: 'body' });
+  for (const key of Object.keys(input)) {
+    if (!ATTESTATION_FIELDS.has(key)) throw new EvidenceValidationError('External scan attestation contains an unsupported field.', { field: key });
+  }
   const scannedAt = validDate(input.scannedAt, 'scannedAt');
   if (scannedAt.getTime() > now().getTime() + 3_600_000) throw new EvidenceValidationError('External scan time is unreasonably far in the future.', { field: 'scannedAt' });
   const findings = Array.isArray(input.findings) ? input.findings.map(normaliseFinding) : [];
@@ -387,7 +403,6 @@ function disabledRegistry() {
     mode: 'disabled',
     requiredForRelease: false,
     acceptSigned() { throw new EvidenceConflictError('External scanner attestations are disabled.'); },
-    record() { throw new EvidenceConflictError('External scanner attestations are disabled.'); },
     list() { return []; },
     latest() { return null; },
     requireCleanForRelease() { return null; },
@@ -397,6 +412,10 @@ function disabledRegistry() {
   });
 }
 
+function compareAttestationRecency(left, right) {
+  const timestampDifference = new Date(left.scannedAt).getTime() - new Date(right.scannedAt).getTime();
+  return timestampDifference || left.sequence - right.sequence;
+}
 function emptyIndex(tenantId) { return { format: FORMAT, version: 1, tenantId, createdAt: null, updatedAt: null, sequence: 0, headHash: null, eventSequence: 0, attestations: [], events: [] }; }
 function attestationPayloadHash(value) { return sha256(Buffer.from(JSON.stringify({ tenantId: value.tenantId, evidenceId: value.evidenceId, version: value.version, contentSha256: value.contentSha256, verdict: value.verdict, scannedAt: value.scannedAt, engine: value.engine, engineVersion: value.engineVersion, definitionsVersion: value.definitionsVersion, findings: value.findings, providerId: value.providerId, keyId: value.keyId, signedAt: value.signedAt, nonce: value.nonce }))); }
 function recordHash(value) { return sha256(Buffer.from(JSON.stringify({ receiptId: value.receiptId, attestationId: value.attestationId, providerId: value.providerId, keyId: value.keyId, evidenceId: value.evidenceId, version: value.version, contentSha256: value.contentSha256, verdict: value.verdict, scannedAt: value.scannedAt, receivedAt: value.receivedAt, engine: value.engine, engineVersion: value.engineVersion, definitionsVersion: value.definitionsVersion, findings: value.findings, sequence: value.sequence, previousHash: value.previousHash, payloadHash: value.payloadHash }))); }
