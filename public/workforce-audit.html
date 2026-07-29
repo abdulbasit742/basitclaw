@@ -25,7 +25,7 @@
     th, td { padding: 12px; border-bottom: 1px solid #e6edf3; text-align: left; }
     th { color: #486581; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
     .badge { display: inline-block; border-radius: 999px; padding: 4px 9px; background: #e6f6ef; color: #176b45; font-size: .8rem; }
-    .blocked, .attention, .high, .critical { background: #fff1f0; color: #9b2c2c; }
+    .blocked, .attention, .high, .critical, .quarantine, .rejected { background: #fff1f0; color: #9b2c2c; }
     .warning { background: #fff8e1; color: #8a5d00; }
     .muted { color: #627d98; }
     #error { color: #9b2c2c; margin-top: 16px; }
@@ -35,7 +35,7 @@
 <body>
 <header>
   <h1>Workforce Audit Assurance</h1>
-  <p>Tenant-isolated audit readiness with enterprise federation, governed identity and privileged access, encrypted evidence custody, governed recovery, fenced writes, distributed abuse controls, and signed security alerts.</p>
+  <p>Tenant-isolated audit readiness with enterprise federation, governed identity and privileged access, encrypted evidence custody and quarantine, governed recovery, fenced writes, distributed abuse controls, and signed security alerts.</p>
 </header>
 <main>
   <form id="auth" class="auth">
@@ -65,9 +65,9 @@
     <table><thead><tr><th>Provider</th><th>Readiness</th><th>Security review</th><th>Capacity</th><th>Blockers</th></tr></thead><tbody id="providers"></tbody></table>
   </section>
   <section id="evidenceSection" hidden>
-    <h2>Evidence custody</h2>
-    <p class="muted">Content is encrypted. This view exposes registered metadata, checksum prefixes, hold state and finding references, but not hold reasons, matter IDs, storage paths or encryption key identifiers.</p>
-    <table><thead><tr><th>Evidence</th><th>File</th><th>Version</th><th>Checksum</th><th>Retention</th><th>Legal hold</th><th>Finding references</th></tr></thead><tbody id="evidenceItems"></tbody></table>
+    <h2>Evidence custody and screening</h2>
+    <p class="muted">Content and screening reports are encrypted. This view exposes status, rule IDs, checksum prefixes, hold state and finding references, but never matched values, review reasons, actors, storage paths or encryption key identifiers.</p>
+    <table><thead><tr><th>Evidence</th><th>File</th><th>Status</th><th>Version</th><th>Screening</th><th>Checksum</th><th>Retention</th><th>Legal hold</th><th>Finding references</th></tr></thead><tbody id="evidenceItems"></tbody></table>
   </section>
   <section id="recoverySection" hidden>
     <h2>Encrypted Recovery Points</h2>
@@ -143,11 +143,15 @@
       const oidc = security?.credentials?.oidc;
       const entitlements = security?.credentials?.identityEntitlements;
       const privilegedHealth = privileged ?? security?.credentials?.privilegedAccess;
+      const screening = evidenceStatus?.screening;
       const cards = [
         ['Audit areas ready', `${overview.universe.ready}/${overview.universe.total}`],
         ['Active engagements', overview.engagements.active], ['High-risk findings', overview.findings.criticalOrHigh],
         ['Evidence custody', evidenceStatus?.status ?? 'disabled'],
         ['Evidence items', evidenceStatus?.total ?? 'restricted'],
+        ['Evidence quarantine', screening?.quarantined ?? 'disabled'],
+        ['Rejected evidence', screening?.rejected ?? 'disabled'],
+        ['Screening reports', screening?.totalReports ?? 'disabled'],
         ['Legal holds', evidenceStatus?.legalHolds ?? 'restricted'],
         ['Retention due', evidenceStatus?.retentionDue ?? 'restricted'],
         ['Evidence chain sequence', evidenceStatus?.headSequence ?? 'restricted'],
@@ -188,7 +192,10 @@
       document.querySelector('#engagements').innerHTML = engagements.map((item) => `<tr><td>${escapeHtml(item.id)}</td><td>${escapeHtml(item.universeItemId)}</td><td>${escapeHtml(item.objective)}</td><td>${escapeHtml(item.startDate)} – ${escapeHtml(item.endDate)}</td><td><span class="badge">${escapeHtml(item.status)}</span></td></tr>`).join('');
       document.querySelector('#providers').innerHTML = providers.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td><span class="badge ${item.readiness === 'blocked' ? 'blocked' : ''}">${escapeHtml(item.readiness)}</span></td><td>${escapeHtml(item.securityReviewStatus)}</td><td>${escapeHtml(item.capacityStatus)}</td><td>${escapeHtml(item.blockers.join(', ') || 'None')}</td></tr>`).join('');
       document.querySelector('#evidenceSection').hidden = !evidence;
-      if (evidence) document.querySelector('#evidenceItems').innerHTML = evidence.map((item) => `<tr><td>${escapeHtml(item.evidenceId)}</td><td>${escapeHtml(item.filename)}</td><td>${escapeHtml(item.currentVersion)}</td><td>${escapeHtml(item.versions.at(-1)?.sha256?.slice(0, 16) || '')}…</td><td>${escapeHtml(item.retentionUntil)}</td><td><span class="badge ${item.legalHold?.active ? 'attention' : ''}">${item.legalHold?.active ? 'active' : 'none'}</span></td><td>${escapeHtml(item.referencedByFindings?.join(', ') || 'None')}</td></tr>`).join('');
+      if (evidence) document.querySelector('#evidenceItems').innerHTML = evidence.map((item) => {
+        const rules = item.screening?.findings?.map((finding) => finding.ruleId).join(', ') || 'clean';
+        return `<tr><td>${escapeHtml(item.evidenceId)}</td><td>${escapeHtml(item.filename)}</td><td><span class="badge ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span></td><td>${escapeHtml(item.currentVersion)}</td><td>${escapeHtml(rules)}</td><td>${escapeHtml(item.versions.at(-1)?.sha256?.slice(0, 16) || '')}…</td><td>${escapeHtml(item.retentionUntil)}</td><td><span class="badge ${item.legalHold?.active ? 'attention' : ''}">${item.legalHold?.active ? 'active' : 'none'}</span></td><td>${escapeHtml(item.referencedByFindings?.join(', ') || 'None')}</td></tr>`;
+      }).join('');
       document.querySelector('#recoverySection').hidden = !backups;
       if (backups) document.querySelector('#backups').innerHTML = backups.map((item) => `<tr><td>${escapeHtml(item.backupId)}</td><td>${escapeHtml(item.createdAt)}</td><td>${escapeHtml(item.kind)}</td><td>${escapeHtml(item.keyId)}</td><td>${escapeHtml(item.sizeBytes)} bytes</td><td>${escapeHtml(item.checksumSha256.slice(0, 16))}…</td></tr>`).join('');
       document.querySelector('#replicaSection').hidden = !replicas;
