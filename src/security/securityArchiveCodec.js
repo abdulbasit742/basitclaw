@@ -8,10 +8,15 @@ export function createSecurityArchiveCodec({
   keys = null,
   primaryKeyId = null
 } = {}) {
-  const materials = createMaterials({ masterKey, keyId, keys });
-  const primaryId = safeIdentifier(primaryKeyId ?? (keys ? Object.keys(keys)[0] : keyId), 'primaryKeyId');
+  const environmentKeys = keys ? null : parseKeyring(process.env.WORKFORCE_AUDIT_SECURITY_ARCHIVE_KEYS);
+  const effectiveKeys = keys ?? environmentKeys;
+  const effectivePrimaryKeyId = primaryKeyId
+    ?? (effectiveKeys ? process.env.WORKFORCE_AUDIT_SECURITY_ARCHIVE_PRIMARY_KEY_ID : null)
+    ?? (effectiveKeys ? Object.keys(effectiveKeys)[0] : keyId);
+  const materials = createMaterials({ masterKey, keyId, keys: effectiveKeys });
+  const primaryId = safeIdentifier(effectivePrimaryKeyId, 'primaryKeyId');
   if (!materials.has(primaryId)) throw new TypeError('Security archive primary key ID is not present in the keyring.');
-  const legacySingleKey = !keys;
+  const legacySingleKey = !effectiveKeys;
 
   function seal(event, { sequence, previousHash, writtenAt }) {
     const material = materials.get(primaryId);
@@ -130,6 +135,10 @@ export function createSecurityArchiveCodec({
   };
 }
 
+export function parseSecurityArchiveKeyring(value) {
+  return parseKeyring(value);
+}
+
 export function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -152,6 +161,18 @@ function createMaterials({ masterKey, keyId, keys }) {
     });
   }
   return materials;
+}
+
+function parseKeyring(value) {
+  if (value === undefined || value === null || value === '') return null;
+  let parsed;
+  try { parsed = typeof value === 'string' ? JSON.parse(value) : value; } catch {
+    throw new TypeError('WORKFORCE_AUDIT_SECURITY_ARCHIVE_KEYS must be a JSON object.');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.keys(parsed).length === 0) {
+    throw new TypeError('Security archive keyring must be a non-empty object.');
+  }
+  return parsed;
 }
 
 function normaliseKey(value) {
