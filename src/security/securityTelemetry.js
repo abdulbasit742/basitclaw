@@ -4,13 +4,16 @@ export function createSecurityTelemetry({
   now = () => new Date(),
   pepper = randomBytes(32).toString('base64'),
   maxEvents = 2000,
-  ephemeralPepper = false
+  ephemeralPepper = false,
+  archive = null
 } = {}) {
   const limit = normaliseInteger(maxEvents, 'maxEvents', 100, 100_000);
   const safePepper = String(pepper ?? '');
   if (safePepper.length < 16) throw new TypeError('Security telemetry pepper must contain at least 16 characters.');
   const events = [];
   let sequence = 0;
+  let archiveFailures = 0;
+  let lastArchiveError = null;
 
   function record(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('Security event input must be an object.');
@@ -35,6 +38,15 @@ export function createSecurityTelemetry({
     const event = Object.freeze({ ...unsigned, hash: hashValue(unsigned) });
     events.push(event);
     while (events.length > limit) events.shift();
+    if (archive?.enabled) {
+      try {
+        archive.append(event);
+        lastArchiveError = null;
+      } catch (error) {
+        archiveFailures += 1;
+        lastArchiveError = error.message;
+      }
+    }
     return structuredClone(event);
   }
 
@@ -67,17 +79,27 @@ export function createSecurityTelemetry({
       countsByType[event.type] = (countsByType[event.type] ?? 0) + 1;
       countsBySeverity[event.severity] = (countsBySeverity[event.severity] ?? 0) + 1;
     }
+    const archiveHealth = archive?.health?.() ?? {
+      status: 'disabled', enabled: false, required: false, mode: 'disabled', durable: false, distributed: false
+    };
+    const archiveFailure = archiveHealth.required && archiveHealth.status !== 'ready';
     return {
-      status: 'ready',
-      mode: 'bounded-memory-hash-chain',
-      durable: false,
+      status: archiveFailure ? 'unavailable' : 'ready',
+      mode: archiveHealth.enabled ? 'bounded-memory-plus-encrypted-archive' : 'bounded-memory-hash-chain',
+      durable: Boolean(archiveHealth.enabled && archiveHealth.durable),
+      distributed: Boolean(archiveHealth.enabled && archiveHealth.distributed),
       ephemeralPepper,
       retainedEvents: events.length,
       maxEvents: limit,
       lastEventAt: events.at(-1)?.occurredAt ?? null,
       countsByType,
       countsBySeverity,
-      integrity: verify()
+      integrity: verify(),
+      archive: {
+        ...archiveHealth,
+        failures: archiveFailures,
+        lastError: lastArchiveError
+      }
     };
   }
 
@@ -85,15 +107,24 @@ export function createSecurityTelemetry({
     return createHash('sha256').update(`${safePepper}:${String(value ?? 'unknown')}`).digest('hex').slice(0, 24);
   }
 
-  return { record, list, verify, summary, fingerprint };
+  function listArchived(options) {
+    return archive?.list?.(options) ?? { events: [], anchorSequence: 0, headSequence: 0, nextSequence: options?.afterSequence ?? 0 };
+  }
+
+  function verifyArchive() {
+    return archive?.verify?.() ?? { valid: true, disabled: true, retainedEvents: 0, headSequence: 0, headHash: null };
+  }
+
+  return { record, list, verify, summary, fingerprint, listArchived, verifyArchive };
 }
 
-export function createSecurityTelemetryFromEnvironment(env = process.env) {
+export function createSecurityTelemetryFromEnvironment(env = process.env, { archive = null } = {}) {
   const configuredPepper = env.WORKFORCE_AUDIT_SECURITY_EVENT_PEPPER;
   return createSecurityTelemetry({
     pepper: configuredPepper ?? randomBytes(32).toString('base64'),
     ephemeralPepper: !configuredPepper,
-    maxEvents: Number(env.WORKFORCE_AUDIT_SECURITY_EVENT_RETENTION ?? 2000)
+    maxEvents: Number(env.WORKFORCE_AUDIT_SECURITY_EVENT_RETENTION ?? 2000),
+    archive
   });
 }
 
