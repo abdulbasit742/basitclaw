@@ -97,11 +97,22 @@ export function createCoordinatedWorkforceAuditRegistry({
       : health;
   }
 
+  function initialiseTenant(registry, tenantId) {
+    registry.forTenant(tenantId);
+    return registry;
+  }
+
   return {
     coordinated: true,
     forTenant,
-    listGovernanceEvents: (tenantId, options) => read(tenantId, (registry) => registry.listGovernanceEvents(tenantId, options)),
-    verifyGovernanceIntegrity: (tenantId) => read(tenantId, (registry) => registry.verifyGovernanceIntegrity(tenantId)),
+    listGovernanceEvents: (tenantId, options) => read(
+      tenantId,
+      (registry) => initialiseTenant(registry, tenantId).listGovernanceEvents(tenantId, options)
+    ),
+    verifyGovernanceIntegrity: (tenantId) => read(
+      tenantId,
+      (registry) => initialiseTenant(registry, tenantId).verifyGovernanceIntegrity(tenantId)
+    ),
     createTenantBackup: (tenantId, options) => write(tenantId, (registry) => registry.createTenantBackup(tenantId, options)),
     listTenantBackups: (tenantId) => read(tenantId, (registry) => registry.listTenantBackups(tenantId)),
     verifyTenantBackup: (tenantId, backupId) => read(tenantId, (registry) => registry.verifyTenantBackup(tenantId, backupId)),
