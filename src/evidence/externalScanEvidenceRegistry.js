@@ -7,11 +7,17 @@ import {
   createExternalScanAttestationRegistryFromEnvironment
 } from './externalScanAttestationRegistry.js';
 import { createExternalScanContentReaderFromEnvironment } from './externalScanContentReader.js';
-import { createExternalScanJobOutboxFromEnvironment } from './externalScanJobOutbox.js';
+import { createExternalScanJobOutbox, createExternalScanJobOutboxFromEnvironment } from './externalScanJobOutbox.js';
 
 const POLICY_RESOURCE = 'external-scan-release-policy';
 
-export function createExternalScanEvidenceRegistry({ registry, attestations, jobs, contentReader = null, policyMutex = null } = {}) {
+export function createExternalScanEvidenceRegistry({
+  registry,
+  attestations,
+  jobs = createExternalScanJobOutbox({ mode: 'disabled' }),
+  contentReader = null,
+  policyMutex = null
+} = {}) {
   if (!registry || typeof registry.screeningReport !== 'function') throw new TypeError('A screened evidence registry is required.');
   if (!attestations || typeof attestations.list !== 'function') throw new TypeError('An external scan attestation registry is required.');
   if (!jobs || typeof jobs.list !== 'function') throw new TypeError('An external scan job outbox is required.');
