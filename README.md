@@ -21,9 +21,33 @@ npm start
 
 Open `http://localhost:3000/dashboard/workforce-audit` and enter the local development key from `.env`.
 
+## Access configuration
+
+Configure `WORKFORCE_AUDIT_API_KEYS` as a JSON array:
+
+```json
+[{"apiKey":"replace-with-a-long-random-key","subject":"audit-manager","tenantId":"tenant-acme","role":"audit_manager"}]
+```
+
+The authenticated principal determines the tenant; callers cannot override it. Audit managers can operate backups, replicas, and non-destructive drills. Compliance administrators additionally control restore execution and manual resilience cycles.
+
+## Encrypted persistence and recovery
+
+Production requires a JSON keyring containing base64-encoded 32-byte keys and a primary key ID:
+
+```bash
+WORKFORCE_AUDIT_ENCRYPTION_KEYS='{"2026-q3":"<base64-32-byte-key>","2026-q2":"<previous-base64-key>"}'
+WORKFORCE_AUDIT_PRIMARY_KEY_ID=2026-q3
+WORKFORCE_AUDIT_DATA_DIR=/var/lib/basitclaw/workforce-audit
+WORKFORCE_AUDIT_BACKUP_DIR=/var/lib/basitclaw/workforce-audit-backups
+WORKFORCE_AUDIT_BACKUP_RETENTION=30
+```
+
+Primary snapshots and recovery points remain AES-256-GCM encrypted. Restore remains two-stage: dry-run with the current governance head, then an administrator request using the fresh head and exact `RESTORE <backupId>` confirmation. A verified safety backup is created before replacement, and failed recovery rolls the primary envelope, business state, and governance chain back together.
+
 ## Resilience configuration
 
-Primary snapshots and recovery points remain AES-256-GCM encrypted. To add a separately controlled replica target:
+To add a separately controlled encrypted replica target and scheduled exercises:
 
 ```bash
 WORKFORCE_AUDIT_REPLICA_DIR=/mnt/off-host/workforce-audit-replicas
@@ -34,12 +58,19 @@ WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES=1440
 WORKFORCE_AUDIT_DRILL_MAX_AGE_DAYS=30
 ```
 
-The scheduler is disabled when `WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES=0`. A filesystem path only counts as off-host protection when the deployment mounts it from independently controlled durable storage.
+The scheduler is disabled when `WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES=0`. A filesystem path only counts as independent disaster-recovery protection when the deployment mounts it from separately controlled durable storage.
 
-## Access model
+## Recovery and resilience APIs
 
-- `audit_manager`: read resilience state, create and verify backups, create and verify replicas, and run non-destructive drills.
-- `compliance_admin`: all manager permissions plus restore execution and manual resilience-cycle execution.
+- `GET|POST /api/workforce-audit/backups`
+- `POST /api/workforce-audit/backups/:backupId/verify`
+- `POST /api/workforce-audit/backups/:backupId/restore`
+- `GET /api/workforce-audit/replicas`
+- `POST /api/workforce-audit/backups/:backupId/replicate`
+- `POST /api/workforce-audit/replicas/:backupId/verify`
+- `GET /api/workforce-audit/resilience-status`
+- `POST /api/workforce-audit/recovery-drills`
+- `POST /api/workforce-audit/resilience-cycle`
 
 ## Verification
 
@@ -50,4 +81,4 @@ The scheduler is disabled when `WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES=0`. A f
 
 ## Deployment boundary
 
-The primary, backup, and replica file stores still assume one writer process. A replica directory on the same host is not independent disaster recovery. Multi-process deployment requires shared transactional persistence or proven distributed locking; production also needs managed key custody, monitored storage mounts, alert routing, and regular isolated recovery exercises.
+The primary, backup, and replica file stores still assume one writer process. A replica directory on the same host is not independent disaster recovery. Multi-process deployment requires shared transactional persistence or proven distributed locking; production also needs managed key custody, monitored storage mounts, alert routing, retention approval, and regular isolated recovery exercises.
