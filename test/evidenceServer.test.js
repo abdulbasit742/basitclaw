@@ -66,17 +66,26 @@ async function listen(app) {
 }
 async function json(response) { return response.json(); }
 
+async function uploadEvidence(base, overrides = {}) {
+  const response = await fetch(`${base}/api/workforce-audit/evidence`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': 'test' },
+    body: JSON.stringify({
+      filename: 'sample.txt',
+      mediaType: 'text/plain',
+      contentBase64: Buffer.from('sample').toString('base64'),
+      ...overrides
+    })
+  });
+  assert.equal(response.status, 201);
+  return (await json(response)).data;
+}
+
 test('uploads evidence, forwards registered finding references, and blocks arbitrary references', async (t) => {
   const { app } = fixture();
   t.after(() => app.close());
   const base = await listen(app);
-  const upload = await fetch(`${base}/api/workforce-audit/evidence`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': 'test' },
-    body: JSON.stringify({ filename: 'sample.txt', mediaType: 'text/plain', contentBase64: Buffer.from('sample').toString('base64') })
-  });
-  assert.equal(upload.status, 201);
-  const item = (await json(upload)).data;
+  const item = await uploadEvidence(base);
   const finding = await fetch(`${base}/api/workforce-audit/findings`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': 'test' },
@@ -96,16 +105,7 @@ test('serves verified bytes and refuses disposal while referenced', async (t) =>
   const { app } = fixture();
   t.after(() => app.close());
   const base = await listen(app);
-  const upload = await fetch(`${base}/api/workforce-audit/evidence`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      filename: 'sample.txt', mediaType: 'text/plain',
-      contentBase64: Buffer.from('sample').toString('base64'),
-      retentionUntil: new Date(Date.now() + 86_400_000).toISOString()
-    })
-  });
-  const item = (await json(upload)).data;
+  const item = await uploadEvidence(base, { retentionUntil: new Date(Date.now() + 86_400_000).toISOString() });
   const content = await fetch(`${base}/api/workforce-audit/evidence/${item.evidenceId}/content`);
   assert.equal(await content.text(), 'sample');
   assert.equal(content.headers.get('x-evidence-sha256').length, 64);
@@ -121,4 +121,19 @@ test('serves verified bytes and refuses disposal while referenced', async (t) =>
   });
   assert.equal(dispose.status, 409);
   assert.equal((await json(dispose)).code, 'EVIDENCE_CONFLICT');
+});
+
+test('event history rejects unsupported POST without mutating evidence', async (t) => {
+  const { app } = fixture();
+  t.after(() => app.close());
+  const base = await listen(app);
+  const item = await uploadEvidence(base);
+  const response = await fetch(`${base}/api/workforce-audit/evidence/${item.evidenceId}/events`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}'
+  });
+  assert.equal(response.status, 404);
+  assert.equal((await json(response)).code, 'NOT_FOUND');
+  assert.equal((await fetch(`${base}/api/workforce-audit/evidence/${item.evidenceId}`)).status, 200);
 });
