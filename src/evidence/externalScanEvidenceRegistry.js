@@ -205,6 +205,8 @@ export function createExternalScanEvidenceRegistryFromEnvironment(env = process.
   const attestations = createExternalScanAttestationRegistryFromEnvironment({ env, evidenceRegistry: registry });
   const jobs = createExternalScanJobOutboxFromEnvironment({ env, evidenceRegistry: registry });
   if (!registry.enabled && (attestations.enabled || jobs.enabled)) throw new EvidenceConflictError('External scanner controls require enabled evidence custody.');
+  if (jobs.enabled && !registry.screeningEnabled) throw new EvidenceConflictError('External scan delivery requires enabled evidence screening.');
+  if (jobs.enabled && !attestations.enabled) throw new EvidenceConflictError('External scan delivery requires signed external scanner attestations.');
   const contentReader = jobs.enabled ? createExternalScanContentReaderFromEnvironment({ env, evidenceRegistry: registry }) : null;
   return createExternalScanEvidenceRegistry({ registry, attestations, jobs, contentReader });
 }
