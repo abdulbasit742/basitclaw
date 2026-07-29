@@ -34,7 +34,7 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
       }
       if (req.method === 'GET' && url.pathname === PREFIX) {
         authenticationGateway.authorise(principal, 'audit:read');
-        const status = optionalEnum(url.searchParams.get('status'), ['active', 'quarantined', 'rejected', 'disposed']);
+        const status = optionalEnum(url.searchParams.get('status'), ['active', 'quarantine', 'rejected', 'disposed']);
         const hold = optionalBoolean(url.searchParams.get('legalHold'));
         const data = registry.list(principal.tenantId, {
           status,
@@ -47,8 +47,8 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
         authenticationGateway.authorise(principal, 'finding:write');
         const data = registry.ingest(principal.tenantId, await readJson(req, bodyLimit), { actor: principal.subject });
         record(securityTelemetry, event(
-          data.status === 'quarantined' ? 'evidence.quarantined' : 'evidence.ingested',
-          data.status === 'quarantined' ? 'high' : 'info', principal, req, requestId, data
+          data.status === 'quarantine' ? 'evidence.quarantined' : 'evidence.ingested',
+          data.status === 'quarantine' ? 'high' : 'info', principal, req, requestId, data
         ));
         return sendJson(res, 201, { success: true, data, meta: meta(requestId, principal) }, requestId);
       }
@@ -78,8 +78,8 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
         authenticationGateway.authorise(principal, 'finding:write');
         const data = registry.addVersion(principal.tenantId, decodeURIComponent(versionMatch[1]), await readJson(req, bodyLimit), { actor: principal.subject });
         record(securityTelemetry, event(
-          data.status === 'quarantined' ? 'evidence.version_quarantined' : 'evidence.version_added',
-          data.status === 'quarantined' ? 'high' : 'info', principal, req, requestId, data
+          data.status === 'quarantine' ? 'evidence.version_quarantined' : 'evidence.version_added',
+          data.status === 'quarantine' ? 'high' : 'info', principal, req, requestId, data
         ));
         return sendJson(res, 201, { success: true, data, meta: meta(requestId, principal) }, requestId);
       }
