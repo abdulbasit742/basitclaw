@@ -9,7 +9,7 @@ import {
   randomUUID,
   timingSafeEqual
 } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createFileMutex } from '../security/fileMutex.js';
 import {
@@ -33,11 +33,11 @@ const RECORD_FORMAT = 'basitclaw-external-scan-job';
 const PACKAGE_FORMAT = 'basitclaw-external-scan-sealed-package';
 const PAYLOAD_FORMAT = 'basitclaw-external-scan-job-payload';
 const MODES = new Set(['disabled', 'pull']);
+const STATES = ['pending', 'inflight', 'delivered', 'completed', 'dead-letter'];
 const JOB_ID = /^SCNJOB-[a-f0-9]{32}$/;
 const EVIDENCE_ID = /^EVD-[a-f0-9]{32}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const NONCE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{15,127}$/;
-const STATES = ['pending', 'inflight', 'delivered', 'completed', 'dead-letter'];
 
 export class ExternalScanJobStoreError extends EvidenceStoreError {
   constructor(message = 'The external scan job outbox is unavailable.', details = {}, cause = null) {
@@ -59,6 +59,7 @@ export function createExternalScanJobOutbox({
   maxAttempts = 5,
   completedRetention = 10_000,
   deadLetterRetention = 2_000,
+  clockSkewSeconds = 300,
   now = () => new Date(),
   mutex = null
 } = {}) {
@@ -69,27 +70,33 @@ export function createExternalScanJobOutbox({
     return disabledOutbox();
   }
   if (!String(directory ?? '').trim()) throw new TypeError('An external scan job directory is required.');
+
   const root = resolve(String(directory));
   const keyring = parseEvidenceKeyring(evidenceKeys, evidencePrimaryKeyId);
   const providerMap = parseProviders(providers);
-  if (![...providerMap.values()].some((provider) => provider.deliveryKeys.size)) {
-    throw new TypeError('At least one scanner provider must contain a publicKeys delivery keyring.');
-  }
   const ttlMinutes = integer(jobTtlMinutes, 'jobTtlMinutes', 1, 10_080);
   const leaseMs = integer(claimLeaseMs, 'claimLeaseMs', 1_000, 3_600_000);
   const attemptsLimit = integer(maxAttempts, 'maxAttempts', 1, 100);
   const completedLimit = integer(completedRetention, 'completedRetention', 100, 1_000_000);
   const deadLimit = integer(deadLetterRetention, 'deadLetterRetention', 1, 100_000);
-  const directories = Object.fromEntries(STATES.map((state) => [state, resolve(root, state)]));
-  for (const path of [root, ...Object.values(directories)]) mkdirSync(path, { recursive: true, mode: 0o700 });
+  const skewSeconds = integer(clockSkewSeconds, 'clockSkewSeconds', 1, 3600);
+  const stateDirectories = Object.fromEntries(STATES.map((state) => [state, resolve(root, state)]));
+  const replayDirectory = resolve(root, 'request-replays');
+  for (const path of [root, replayDirectory, ...Object.values(stateDirectories)]) ensureDirectory(path);
   const lock = mutex ?? createFileMutex({ directory: resolve(root, '.locks'), now });
+
+  if (![...providerMap.values()].some((provider) => provider.hmacKeys.size && provider.deliveryKeys.size)) {
+    throw new TypeError('At least one scanner provider must contain both HMAC keys and RSA publicKeys.');
+  }
 
   function queue(contentRecord, providerId, { actor } = {}) {
     const content = validateContentRecord(contentRecord);
     const provider = providerFor(providerMap, providerId);
+    if (!provider.hmacKeys.size) throw new EvidenceConflictError('The selected scanner provider has no HMAC request keys.', { providerId });
     const delivery = latestDeliveryKey(provider, providerId);
     const queuedBy = identifier(actor, 'actor');
     const jobId = jobIdFor(content, providerId);
+
     return lock.withLock('external-scan-job-outbox', () => {
       recoverStaleLocked();
       const existing = locate(jobId);
@@ -109,7 +116,15 @@ export function createExternalScanJobOutbox({
         mediaType: content.mediaType,
         queuedBy
       };
-      const sealedPackage = sealPackage({ content, providerId, deliveryKeyId: delivery.keyId, publicKey: delivery.publicKey, jobId, createdAt, expiresAt });
+      const sealedPackage = sealPackage({
+        content,
+        providerId,
+        deliveryKeyId: delivery.keyId,
+        publicKey: delivery.publicKey,
+        jobId,
+        createdAt,
+        expiresAt
+      });
       const record = {
         format: RECORD_FORMAT,
         version: 1,
@@ -123,6 +138,7 @@ export function createExternalScanJobOutbox({
         attempts: 0,
         nextAttemptAt: createdAt,
         claimToken: null,
+        claimedAt: null,
         claimExpiresAt: null,
         deliveredAt: null,
         completedAt: null,
@@ -132,7 +148,7 @@ export function createExternalScanJobOutbox({
         package: sealedPackage,
         management: encryptEvidenceJson(management, keyring, managementAad(jobId))
       };
-      writeRecord(resolve(directories.pending, `${jobId}.json`), record);
+      writeRecord(resolve(stateDirectories.pending, `${jobId}.json`), record);
       return { queued: true, duplicate: false, job: publicJob(record, management) };
     });
   }
@@ -142,11 +158,12 @@ export function createExternalScanJobOutbox({
     const input = parseStrictJson(bodyBuffer, new Set(['limit']));
     const limit = integer(input.limit ?? 1, 'limit', 1, 25);
     return lock.withLock('external-scan-job-outbox', () => {
+      consumeReplayLocked(auth);
       recoverStaleLocked();
       const claimed = [];
-      for (const filename of jsonNames(directories.pending)) {
+      for (const filename of jsonNames(stateDirectories.pending)) {
         if (claimed.length >= limit) break;
-        const source = resolve(directories.pending, filename);
+        const source = resolve(stateDirectories.pending, filename);
         const record = readRecord(source);
         if (record.providerId !== auth.providerId) continue;
         if (new Date(record.nextAttemptAt).getTime() > now().getTime()) continue;
@@ -154,8 +171,8 @@ export function createExternalScanJobOutbox({
           moveToDeadLocked(source, record, 'job_expired');
           continue;
         }
-        if (!record.package) {
-          moveToDeadLocked(source, record, 'sealed_package_missing');
+        if (!record.package || packageHash(record.package) !== record.packageSha256) {
+          moveToDeadLocked(source, record, 'sealed_package_invalid');
           continue;
         }
         const claimToken = randomUUID();
@@ -169,14 +186,8 @@ export function createExternalScanJobOutbox({
           claimedAt,
           claimExpiresAt: new Date(now().getTime() + leaseMs).toISOString()
         };
-        const target = resolve(directories.inflight, filename);
-        writeAndMove(source, target, next);
-        claimed.push({
-          jobId: next.jobId,
-          claimToken,
-          claimExpiresAt: next.claimExpiresAt,
-          package: structuredClone(next.package)
-        });
+        writeAndMove(source, resolve(stateDirectories.inflight, filename), next);
+        claimed.push({ jobId: next.jobId, claimToken, claimExpiresAt: next.claimExpiresAt, package: structuredClone(next.package) });
       }
       return { providerId: auth.providerId, jobs: claimed };
     });
@@ -187,8 +198,9 @@ export function createExternalScanJobOutbox({
     const input = parseStrictJson(bodyBuffer, new Set(['claimToken']));
     const claimToken = identifier(input.claimToken, 'claimToken');
     return lock.withLock('external-scan-job-outbox', () => {
+      consumeReplayLocked(auth);
       const id = safeJobId(jobId);
-      const source = resolve(directories.inflight, `${id}.json`);
+      const source = resolve(stateDirectories.inflight, `${id}.json`);
       const record = readOwnedClaim(source, auth.providerId, claimToken);
       const deliveredAt = now().toISOString();
       const next = {
@@ -202,8 +214,8 @@ export function createExternalScanJobOutbox({
         package: null,
         result: { delivery: 'acknowledged' }
       };
-      writeAndMove(source, resolve(directories.delivered, `${id}.json`), next);
-      pruneLocked(directories.delivered, completedLimit);
+      writeAndMove(source, resolve(stateDirectories.delivered, `${id}.json`), next);
+      pruneLocked(stateDirectories.delivered, completedLimit);
       return publicJob(next, decryptManagement(next));
     });
   }
@@ -215,8 +227,9 @@ export function createExternalScanJobOutbox({
     const retryable = booleanValue(input.retryable, 'retryable');
     const reasonCode = safeReasonCode(input.reasonCode);
     return lock.withLock('external-scan-job-outbox', () => {
+      consumeReplayLocked(auth);
       const id = safeJobId(jobId);
-      const source = resolve(directories.inflight, `${id}.json`);
+      const source = resolve(stateDirectories.inflight, `${id}.json`);
       const record = readOwnedClaim(source, auth.providerId, claimToken);
       if (retryable && record.attempts < attemptsLimit && record.package) {
         const retryAt = now().toISOString();
@@ -230,7 +243,7 @@ export function createExternalScanJobOutbox({
           claimExpiresAt: null,
           result: { delivery: 'retry', reasonCode }
         };
-        writeAndMove(source, resolve(directories.pending, `${id}.json`), next);
+        writeAndMove(source, resolve(stateDirectories.pending, `${id}.json`), next);
         return publicJob(next, decryptManagement(next));
       }
       const dead = moveToDeadLocked(source, record, reasonCode);
@@ -239,21 +252,22 @@ export function createExternalScanJobOutbox({
   }
 
   function completeFromAttestation(attestation) {
-    if (!attestation || !attestation.tenantId || !attestation.evidenceId) return { matched: false };
-    const content = {
+    if (!attestation?.tenantId || !attestation?.evidenceId || !attestation?.providerId) return { matched: false };
+    const jobId = jobIdFor({
       tenantId: attestation.tenantId,
       evidenceId: attestation.evidenceId,
       version: attestation.version,
       contentSha256: attestation.contentSha256
-    };
-    const jobId = jobIdFor(content, attestation.providerId);
+    }, attestation.providerId);
     return lock.withLock('external-scan-job-outbox', () => {
       const located = locate(jobId);
       if (!located) return { matched: false, jobId };
       const record = readRecord(located.path);
       const management = decryptManagement(record);
-      if (management.tenantId !== attestation.tenantId || management.evidenceId !== attestation.evidenceId
-          || management.evidenceVersion !== attestation.version || management.contentSha256 !== attestation.contentSha256
+      if (management.tenantId !== attestation.tenantId
+          || management.evidenceId !== attestation.evidenceId
+          || management.evidenceVersion !== attestation.version
+          || management.contentSha256 !== attestation.contentSha256
           || record.providerId !== attestation.providerId) {
         throw new EvidenceIntegrityError('External scan attestation does not match its sealed delivery job.', { jobId });
       }
@@ -275,9 +289,8 @@ export function createExternalScanJobOutbox({
           scannedAt: attestation.scannedAt
         }
       };
-      const target = resolve(directories.completed, `${jobId}.json`);
-      writeAndMove(located.path, target, next);
-      pruneLocked(directories.completed, completedLimit);
+      writeAndMove(located.path, resolve(stateDirectories.completed, `${jobId}.json`), next);
+      pruneLocked(stateDirectories.completed, completedLimit);
       return { matched: true, duplicate: false, job: publicJob(next, management) };
     });
   }
@@ -285,19 +298,19 @@ export function createExternalScanJobOutbox({
   function list(tenantId, { evidenceId = null, limit = 100 } = {}) {
     const tenant = identifier(tenantId, 'tenantId');
     const evidence = evidenceId === null ? null : safeEvidenceId(evidenceId);
-    const rows = [];
-    lock.withLock('external-scan-job-outbox', () => {
+    return lock.withLock('external-scan-job-outbox', () => {
       recoverStaleLocked();
+      const rows = [];
       for (const state of STATES) {
-        for (const filename of jsonNames(directories[state])) {
-          const record = readRecord(resolve(directories[state], filename));
+        for (const filename of jsonNames(stateDirectories[state])) {
+          const record = readRecord(resolve(stateDirectories[state], filename));
           const management = decryptManagement(record);
           if (management.tenantId !== tenant || (evidence && management.evidenceId !== evidence)) continue;
           rows.push(publicJob(record, management));
         }
       }
+      return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, integer(limit, 'limit', 1, 5000));
     });
-    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, integer(limit, 'limit', 1, 5000));
   }
 
   function latest(tenantId, evidenceId, version = null) {
@@ -307,45 +320,47 @@ export function createExternalScanJobOutbox({
 
   function tenantStatus(tenantId) {
     const jobs = list(tenantId, { limit: 5000 });
-    const counts = Object.fromEntries(STATES.map((state) => [state.replace('-', ''), jobs.filter((job) => job.state === state).length]));
+    const count = (state) => jobs.filter((job) => job.state === state).length;
+    const deadLetters = count('dead-letter');
+    const pending = count('pending');
+    const inflight = count('inflight');
     return {
-      status: counts.deadletter || counts.pending || counts.inflight ? 'attention' : 'ready',
+      status: deadLetters || pending || inflight ? 'attention' : 'ready',
       enabled: true,
       required: isRequired,
       mode: selectedMode,
       total: jobs.length,
-      pending: counts.pending,
-      inflight: counts.inflight,
-      delivered: counts.delivered,
-      completed: counts.completed,
-      deadLetters: counts.deadletter
+      pending,
+      inflight,
+      delivered: count('delivered'),
+      completed: count('completed'),
+      deadLetters
     };
   }
 
   function verify(tenantId) {
     const tenant = identifier(tenantId, 'tenantId');
-    let checked = 0;
-    lock.withLock('external-scan-job-outbox', () => {
+    return lock.withLock('external-scan-job-outbox', () => {
+      let checkedJobs = 0;
       for (const state of STATES) {
-        for (const filename of jsonNames(directories[state])) {
-          const record = readRecord(resolve(directories[state], filename));
+        for (const filename of jsonNames(stateDirectories[state])) {
+          const record = readRecord(resolve(stateDirectories[state], filename));
           const management = decryptManagement(record);
           if (management.tenantId !== tenant) continue;
-          validateRecord(record);
           if (record.package && packageHash(record.package) !== record.packageSha256) {
             throw new EvidenceIntegrityError('A sealed external scan package checksum is invalid.', { jobId: record.jobId });
           }
-          checked += 1;
+          checkedJobs += 1;
         }
       }
+      return { valid: true, tenantId: tenant, checkedJobs };
     });
-    return { valid: true, tenantId: tenant, checkedJobs: checked };
   }
 
   function health() {
     try {
-      for (const path of [root, ...Object.values(directories)]) mkdirSync(path, { recursive: true, mode: 0o700 });
-      const counts = Object.fromEntries(STATES.map((state) => [state, jsonNames(directories[state]).length]));
+      for (const path of [root, replayDirectory, ...Object.values(stateDirectories)]) ensureDirectory(path);
+      const counts = Object.fromEntries(STATES.map((state) => [state, jsonNames(stateDirectories[state]).length]));
       return {
         status: counts['dead-letter'] ? 'degraded' : 'ready',
         enabled: true,
@@ -355,6 +370,7 @@ export function createExternalScanJobOutbox({
         distributed: true,
         plaintextQueued: false,
         publicKeySealed: true,
+        requestReplayProtected: true,
         providerCount: providerMap.size,
         jobTtlMinutes: ttlMinutes,
         claimLeaseMs: leaseMs,
@@ -365,6 +381,14 @@ export function createExternalScanJobOutbox({
     } catch (error) {
       return { status: 'unavailable', enabled: true, required: isRequired, mode: selectedMode, error: error?.code ?? 'external_scan_job_store_unavailable' };
     }
+  }
+
+  function locate(jobId) {
+    for (const state of STATES) {
+      const path = resolve(stateDirectories[state], `${jobId}.json`);
+      if (existsSync(path)) return { state, path };
+    }
+    return null;
   }
 
   function authenticate(bodyBuffer, headers = {}) {
@@ -379,17 +403,51 @@ export function createExternalScanJobOutbox({
     if (!provider || !secret || !NONCE.test(nonce) || !HASH.test(signature)) throw new ExternalScanAuthenticationError();
     const signedAt = validDate(timestamp, 'timestamp');
     const distanceSeconds = Math.abs(now().getTime() - signedAt.getTime()) / 1000;
-    if (distanceSeconds > 300) throw new ExternalScanAuthenticationError('External scanner timestamp is outside the allowed clock-skew window.', { reason: 'timestamp_out_of_window' });
-    const canonical = `${providerId}\n${keyId}\n${signedAt.toISOString()}\n${nonce}\n${sha256(bodyBuffer)}`;
+    if (distanceSeconds > skewSeconds) throw new ExternalScanAuthenticationError('External scanner timestamp is outside the allowed clock-skew window.', { reason: 'timestamp_out_of_window' });
+    const bodySha256 = sha256(bodyBuffer);
+    const canonical = `${providerId}\n${keyId}\n${signedAt.toISOString()}\n${nonce}\n${bodySha256}`;
     const expected = createHmac('sha256', secret).update(canonical).digest();
     const supplied = Buffer.from(signature, 'hex');
     if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new ExternalScanAuthenticationError();
-    return { providerId, keyId, signedAt: signedAt.toISOString(), nonce };
+    return {
+      providerId,
+      keyId,
+      signedAt: signedAt.toISOString(),
+      nonce,
+      replayId: createHash('sha256').update(canonical).digest('hex')
+    };
+  }
+
+  function consumeReplayLocked(authentication) {
+    pruneReplaysLocked();
+    const path = resolve(replayDirectory, `${authentication.replayId}.json`);
+    if (existsSync(path)) throw new ExternalScanAuthenticationError('External scanner request replay was rejected.', { reason: 'replay_detected' });
+    atomicWriteEvidenceJson(path, {
+      version: 1,
+      replayId: authentication.replayId,
+      providerId: authentication.providerId,
+      keyId: authentication.keyId,
+      acceptedAt: now().toISOString(),
+      expiresAt: new Date(now().getTime() + skewSeconds * 2_000).toISOString()
+    });
+  }
+
+  function pruneReplaysLocked() {
+    const current = now().getTime();
+    for (const filename of readdirSync(replayDirectory).filter((name) => /^[a-f0-9]{64}\.json$/.test(name))) {
+      const path = resolve(replayDirectory, filename);
+      try {
+        const replay = readEvidenceJson(path);
+        if (new Date(replay.expiresAt).getTime() <= current) rmSync(path, { force: true });
+      } catch {
+        rmSync(path, { force: true });
+      }
+    }
   }
 
   function recoverStaleLocked() {
-    for (const filename of jsonNames(directories.inflight)) {
-      const source = resolve(directories.inflight, filename);
+    for (const filename of jsonNames(stateDirectories.inflight)) {
+      const source = resolve(stateDirectories.inflight, filename);
       const record = readRecord(source);
       if (new Date(record.claimExpiresAt ?? 0).getTime() > now().getTime()) continue;
       if (record.package && record.attempts < attemptsLimit && new Date(record.expiresAt).getTime() > now().getTime()) {
@@ -404,7 +462,7 @@ export function createExternalScanJobOutbox({
           claimExpiresAt: null,
           result: { delivery: 'claim_recovered' }
         };
-        writeAndMove(source, resolve(directories.pending, filename), next);
+        writeAndMove(source, resolve(stateDirectories.pending, filename), next);
       } else {
         moveToDeadLocked(source, record, 'claim_expired');
       }
@@ -424,8 +482,8 @@ export function createExternalScanJobOutbox({
       package: null,
       result: { delivery: 'dead-letter', reasonCode: safeReasonCode(reasonCode) }
     };
-    writeAndMove(source, resolve(directories['dead-letter'], `${record.jobId}.json`), next);
-    pruneLocked(directories['dead-letter'], deadLimit);
+    writeAndMove(source, resolve(stateDirectories['dead-letter'], `${record.jobId}.json`), next);
+    pruneLocked(stateDirectories['dead-letter'], deadLimit);
     return next;
   }
 
@@ -476,7 +534,8 @@ export function createExternalScanJobOutboxFromEnvironment({ env = process.env, 
       claimLeaseMs: environmentValue(env.WORKFORCE_AUDIT_EXTERNAL_SCAN_CLAIM_LEASE_MS) ?? 300_000,
       maxAttempts: environmentValue(env.WORKFORCE_AUDIT_EXTERNAL_SCAN_MAX_DELIVERY_ATTEMPTS) ?? 5,
       completedRetention: environmentValue(env.WORKFORCE_AUDIT_EXTERNAL_SCAN_COMPLETED_RETENTION) ?? 10_000,
-      deadLetterRetention: environmentValue(env.WORKFORCE_AUDIT_EXTERNAL_SCAN_DEAD_LETTER_RETENTION) ?? 2_000
+      deadLetterRetention: environmentValue(env.WORKFORCE_AUDIT_EXTERNAL_SCAN_DEAD_LETTER_RETENTION) ?? 2_000,
+      clockSkewSeconds: environmentValue(env.WORKFORCE_AUDIT_EXTERNAL_SCANNER_CLOCK_SKEW_SECONDS) ?? 300
     });
   } catch (error) {
     if (error instanceof ExternalScanJobStoreError) throw error;
@@ -527,7 +586,7 @@ function sealPackage({ content, providerId, deliveryKeyId, publicKey, jobId, cre
 
 function parseProviders(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('External scanner providers must be an object.');
-  const result = new Map();
+  const providers = new Map();
   for (const [providerId, provider] of Object.entries(input)) {
     identifier(providerId, 'providerId');
     if (!provider || typeof provider !== 'object' || Array.isArray(provider)) throw new TypeError(`External scanner provider ${providerId} must be an object.`);
@@ -542,14 +601,14 @@ function parseProviders(input) {
     for (const [keyId, pem] of Object.entries(provider.publicKeys ?? {})) {
       identifier(keyId, 'deliveryKeyId');
       const key = createPublicKey(String(pem));
-      if (!['rsa', 'rsa-pss'].includes(key.asymmetricKeyType)) throw new TypeError(`External scanner public key ${providerId}/${keyId} must be RSA.`);
+      if (key.asymmetricKeyType !== 'rsa') throw new TypeError(`External scanner public key ${providerId}/${keyId} must be an RSA encryption key.`);
       const bits = key.asymmetricKeyDetails?.modulusLength ?? 0;
       if (bits < 2048) throw new TypeError(`External scanner public key ${providerId}/${keyId} must be at least 2048 bits.`);
       deliveryKeys.set(keyId, key);
     }
-    result.set(providerId, { hmacKeys, deliveryKeys });
+    providers.set(providerId, { hmacKeys, deliveryKeys });
   }
-  return result;
+  return providers;
 }
 
 function latestDeliveryKey(provider, providerId) {
@@ -583,20 +642,6 @@ function readOwnedClaim(path, providerId, claimToken) {
   }
   return record;
 }
-function locate(jobId) {
-  for (const state of STATES) {
-    const path = resolve(currentDirectories[state], `${jobId}.json`);
-    if (existsSync(path)) return { state, path };
-  }
-  return null;
-}
-
-let currentDirectories = null;
-function writeRecord(path, record) { validateRecord(record); atomicWriteEvidenceJson(path, record); }
-function writeAndMove(source, target, record) {
-  writeRecord(target, record);
-  if (source !== target) rmSync(source, { force: true });
-}
 function readRecord(path) {
   if (!existsSync(path)) throw new EvidenceConflictError('The external scan job was not found or is no longer claimable.');
   let record;
@@ -611,6 +656,8 @@ function validateRecord(record) {
     throw new EvidenceIntegrityError('An external scan job record is invalid.', { jobId: record?.jobId ?? null });
   }
 }
+function writeRecord(path, record) { validateRecord(record); atomicWriteEvidenceJson(path, record); }
+function writeAndMove(source, target, record) { writeRecord(target, record); if (source !== target) rmSync(source, { force: true }); }
 function publicJob(record, management) {
   return {
     jobId: record.jobId,
@@ -634,11 +681,9 @@ function publicJob(record, management) {
 function packageHash(value) { return sha256(Buffer.from(JSON.stringify(value))); }
 function managementAad(jobId) { return `basitclaw:external-scan-job-management:${jobId}`; }
 function packageAad(jobId, providerId, keyId) { return `basitclaw:external-scan-job:${jobId}:${providerId}:${keyId}`; }
+function ensureDirectory(path) { mkdirSync(path, { recursive: true, mode: 0o700 }); }
 function jsonNames(directory) { return readdirSync(directory).filter((name) => /^SCNJOB-[a-f0-9]{32}\.json$/.test(name)).sort(); }
-function pruneLocked(directory, limit) {
-  const names = jsonNames(directory);
-  for (const name of names.slice(0, Math.max(0, names.length - limit))) rmSync(resolve(directory, name), { force: true });
-}
+function pruneLocked(directory, limit) { const names = jsonNames(directory); for (const name of names.slice(0, Math.max(0, names.length - limit))) rmSync(resolve(directory, name), { force: true }); }
 function parseStrictJson(bodyBuffer, allowed) {
   let value;
   try { value = JSON.parse(bodyBuffer.toString('utf8') || '{}'); }
