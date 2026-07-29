@@ -24,6 +24,7 @@ const FORMAT = 'basitclaw-workforce-audit-evidence-screening';
 const EVIDENCE_ID = /^EVD-[a-f0-9]{32}$/;
 const DECISIONS = new Set(['clean', 'quarantine', 'rejected']);
 const REVIEW_ACTIONS = new Set(['released', 'rejected']);
+const SCREENING_STATUSES = new Set(['quarantine', 'rejected']);
 
 export class EvidenceQuarantinedError extends EvidenceConflictError {
   constructor(evidenceId, details = {}) {
@@ -83,14 +84,25 @@ export function createScreenedEvidenceRegistry({
   }
 
   function list(tenantId, options = {}) {
+    const tenant = identifier(tenantId, 'tenantId');
     const status = options.status ?? null;
-    const baseOptions = { ...options, status: status === 'active' || status === 'disposed' ? status : null };
-    let items = registry.list(tenantId, baseOptions).map((item) => overlay(tenantId, item));
+    const requestedLimit = integer(options.limit ?? 500, 'limit', 1, 5000);
+    const screeningFilter = SCREENING_STATUSES.has(status);
+    const baseOptions = {
+      ...options,
+      status: status === 'active' || status === 'disposed' ? status : null,
+      limit: screeningFilter ? 5000 : requestedLimit
+    };
+    const index = loadSafe(tenant);
+    let items = registry.list(tenant, baseOptions).map((item) => overlayFromIndex(item, index, true));
     if (status) items = items.filter((item) => item.status === status);
-    return items;
+    return items.slice(0, requestedLimit);
   }
 
-  function get(tenantId, evidenceId) { return overlay(tenantId, registry.get(tenantId, evidenceId)); }
+  function get(tenantId, evidenceId) {
+    const tenant = identifier(tenantId, 'tenantId');
+    return overlayFromIndex(registry.get(tenant, evidenceId), loadSafe(tenant), true);
+  }
 
   function readContent(tenantId, evidenceId, options = {}) {
     const item = registry.get(tenantId, evidenceId);
@@ -103,6 +115,18 @@ export function createScreenedEvidenceRegistry({
     const items = registry.assertUsableReferences(tenantId, references);
     for (const item of items) assertVersionAccessible(tenantId, item.evidenceId, item.currentVersion);
     return items.map((item) => overlay(tenantId, item));
+  }
+
+  function placeLegalHold(tenantId, ...args) {
+    return overlay(tenantId, registry.placeLegalHold(tenantId, ...args));
+  }
+
+  function releaseLegalHold(tenantId, ...args) {
+    return overlay(tenantId, registry.releaseLegalHold(tenantId, ...args));
+  }
+
+  function dispose(tenantId, ...args) {
+    return overlay(tenantId, registry.dispose(tenantId, ...args));
   }
 
   function releaseQuarantine(tenantId, evidenceId, input, { actor } = {}) {
@@ -121,7 +145,7 @@ export function createScreenedEvidenceRegistry({
       version.review = { action: 'released', reviewedAt: now().toISOString(), reviewedBy: by, reason };
       appendEvent(index, by, 'screening.quarantine_released', id, { version: version.version, reportId: version.reportId }, now, retainedEvents);
       saveIndex(tenant, index);
-      return overlay(tenant, registry.get(tenant, id));
+      return overlayFromIndex(registry.get(tenant, id), index);
     });
   }
 
@@ -141,7 +165,7 @@ export function createScreenedEvidenceRegistry({
       version.review = { action: 'rejected', reviewedAt: now().toISOString(), reviewedBy: by, reason };
       appendEvent(index, by, 'screening.quarantine_rejected', id, { version: version.version, reportId: version.reportId }, now, retainedEvents);
       saveIndex(tenant, index);
-      return overlay(tenant, registry.get(tenant, id));
+      return overlayFromIndex(registry.get(tenant, id), index);
     });
   }
 
@@ -199,13 +223,18 @@ export function createScreenedEvidenceRegistry({
   }
 
   function overlay(tenantId, item) {
-    if (item.status === 'disposed') return { ...item, screening: { status: 'not-applicable' } };
     const tenant = identifier(tenantId, 'tenantId');
-    const index = loadSafe(tenant);
+    return overlayFromIndex(item, loadSafe(tenant), true);
+  }
+
+  function overlayFromIndex(item, index, missingAsQuarantine = false) {
+    if (item.status === 'disposed') return { ...item, screening: { status: 'not-applicable' } };
     const record = index.records.find((entry) => entry.evidenceId === item.evidenceId);
-    if (!record) throw new EvidenceScreeningStoreError('Screening metadata is missing for an evidence item.', { evidenceId: item.evidenceId });
-    const version = record.versions.find((entry) => entry.version === item.currentVersion);
-    if (!version) throw new EvidenceScreeningStoreError('Screening metadata is missing for the current evidence version.', { evidenceId: item.evidenceId, version: item.currentVersion });
+    const version = record?.versions.find((entry) => entry.version === item.currentVersion);
+    if (!record || !version) {
+      if (missingAsQuarantine) return missingScreeningOverlay(item);
+      throw new EvidenceScreeningStoreError('Screening metadata is missing for the current evidence version.', { evidenceId: item.evidenceId, version: item.currentVersion });
+    }
     const accessDecision = effectiveDecision(version);
     return { ...item, status: accessDecision === 'clean' ? item.status : accessDecision, screening: publicScreening(version) };
   }
@@ -267,6 +296,7 @@ export function createScreenedEvidenceRegistry({
   return Object.freeze({
     ...registry,
     ingest, addVersion, list, get, readContent, assertUsableReferences,
+    placeLegalHold, releaseLegalHold, dispose,
     releaseQuarantine, rejectQuarantine, screeningReport, screeningEvents,
     verify, health, tenantStatus,
     screeningEnabled: true,
@@ -315,6 +345,7 @@ function findRecord(index, evidenceId) { const record = index.records.find((entr
 function currentScreening(record) { const selected = record.versions.find((entry) => entry.version === record.currentVersion); if (!selected) throw new EvidenceIntegrityError('The current evidence screening version is missing.', { evidenceId: record.evidenceId }); return selected; }
 function effectiveDecision(version) { if (version.review?.action === 'released') return 'clean'; if (version.review?.action === 'rejected') return 'rejected'; return version.decision; }
 function publicScreening(version) { return { reportId: version.reportId, engineVersion: version.engineVersion, mode: version.mode, decision: version.decision, accessDecision: effectiveDecision(version), wouldQuarantine: version.wouldQuarantine, scannedAt: version.scannedAt, contentSha256: version.contentSha256, sizeBytes: version.sizeBytes, version: version.version, findings: version.findings.map((finding) => ({ ...finding })), reviewedAt: version.review?.reviewedAt ?? null, reviewAction: version.review?.action ?? null }; }
+function missingScreeningOverlay(item) { return { ...item, status: 'quarantine', screening: { status: 'unavailable', decision: 'quarantine', accessDecision: 'quarantine', wouldQuarantine: true, findings: [], version: item.currentVersion } }; }
 function publicEvent(event) { return { eventId: event.eventId, sequence: event.sequence, occurredAt: event.occurredAt, action: event.action, evidenceId: event.evidenceId, metadata: structuredClone(event.metadata), previousHash: event.previousHash, hash: event.hash }; }
 function validateReport(report) { if (!report || !/^SCR-[a-f0-9]{32}$/.test(report.reportId) || !DECISIONS.has(report.decision) || !Array.isArray(report.findings)) throw new EvidenceIntegrityError('The evidence screening report is invalid.'); }
 function validateVersion(version, evidenceId) { if (!Number.isInteger(version.version) || version.version < 1 || !DECISIONS.has(version.decision) || !/^SCR-[a-f0-9]{32}$/.test(version.reportId) || !Array.isArray(version.findings) || (version.review && (!REVIEW_ACTIONS.has(version.review.action) || typeof version.review.reviewedAt !== 'string'))) throw new EvidenceIntegrityError('Stored evidence screening metadata is invalid.', { evidenceId, version: version.version }); }
