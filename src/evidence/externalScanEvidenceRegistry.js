@@ -1,0 +1,145 @@
+import { resolve } from 'node:path';
+import { createFileMutex } from '../security/fileMutex.js';
+import { EvidenceConflictError } from './evidenceRegistry.js';
+import { createScreenedEvidenceRegistryFromEnvironment } from './evidenceScreeningRegistry.js';
+import {
+  ExternalScanRequiredError,
+  createExternalScanAttestationRegistryFromEnvironment
+} from './externalScanAttestationRegistry.js';
+
+const POLICY_RESOURCE = 'external-scan-release-policy';
+
+export function createExternalScanEvidenceRegistry({ registry, attestations, policyMutex = null } = {}) {
+  if (!registry || typeof registry.screeningReport !== 'function') throw new TypeError('A screened evidence registry is required.');
+  if (!attestations || typeof attestations.list !== 'function') throw new TypeError('An external scan attestation registry is required.');
+  const policyLock = policyMutex ?? createPolicyMutex(registry, attestations.enabled);
+
+  function recordExternalScanAttestation(bodyBuffer, headers) {
+    return policyLock.withLock(POLICY_RESOURCE, () => attestations.acceptSigned(bodyBuffer, headers, (attestation) => {
+      const report = registry.screeningReport(attestation.tenantId, attestation.evidenceId, { version: attestation.version });
+      return { version: report.version, contentSha256: report.contentSha256 };
+    }));
+  }
+
+  function externalScanAttestations(tenantId, evidenceId, options = {}) {
+    return attestations.list(tenantId, { evidenceId, ...options });
+  }
+
+  function externalScanStatus(tenantId) {
+    return attestations.tenantStatus(tenantId);
+  }
+
+  function releaseQuarantine(tenantId, evidenceId, input, context = {}) {
+    return policyLock.withLock(POLICY_RESOURCE, () => {
+      const item = registry.get(tenantId, evidenceId);
+      const report = registry.screeningReport(tenantId, evidenceId, { version: item.currentVersion });
+      const latest = attestations.latest(tenantId, evidenceId, item.currentVersion);
+      if (attestations.enabled && attestations.mode === 'enforce' && latest && latest.verdict !== 'clean') {
+        throw new ExternalScanRequiredError(evidenceId, {
+          version: item.currentVersion,
+          reason: 'external_verdict_not_clean',
+          latestVerdict: latest.verdict,
+          providerId: latest.providerId,
+          scannedAt: latest.scannedAt
+        });
+      }
+      attestations.requireCleanForRelease(tenantId, evidenceId, item.currentVersion, report.contentSha256);
+      return withExternalScan(tenantId, registry.releaseQuarantine(tenantId, evidenceId, input, context));
+    });
+  }
+
+  function get(tenantId, evidenceId) {
+    return withExternalScan(tenantId, registry.get(tenantId, evidenceId));
+  }
+
+  function list(tenantId, options = {}) {
+    return registry.list(tenantId, options).map((item) => withExternalScan(tenantId, item));
+  }
+
+  function screeningReport(tenantId, evidenceId, options = {}) {
+    const report = registry.screeningReport(tenantId, evidenceId, options);
+    return { ...report, externalScan: attestations.latest(tenantId, evidenceId, report.version) };
+  }
+
+  function verify(tenantId, evidenceId = null) {
+    const result = registry.verify(tenantId, evidenceId);
+    return { ...result, externalScan: attestations.verify(tenantId) };
+  }
+
+  function health() {
+    const base = registry.health();
+    const externalScan = attestations.health();
+    const policy = policyLock.health();
+    const enforced = externalScan.mode === 'enforce';
+    const unavailable = (enforced && externalScan.status !== 'ready') || (attestations.enabled && policy.status !== 'ready');
+    return {
+      ...base,
+      required: Boolean(base.required || enforced || externalScan.requiredForRelease),
+      status: unavailable ? 'unavailable' : base.status,
+      externalScan: { ...externalScan, policyMutex: policy }
+    };
+  }
+
+  function tenantStatus(tenantId) {
+    const base = registry.tenantStatus(tenantId);
+    try {
+      const externalScan = attestations.tenantStatus(tenantId);
+      const unavailable = externalScan.mode === 'enforce' && externalScan.status === 'unavailable';
+      return {
+        ...base,
+        status: unavailable ? 'unavailable' : base.status === 'unavailable' ? 'unavailable' : externalScan.status === 'attention' ? 'attention' : base.status,
+        externalScan
+      };
+    } catch (error) {
+      const enforced = attestations.mode === 'enforce' || attestations.requiredForRelease;
+      return {
+        ...base,
+        status: enforced ? 'unavailable' : base.status,
+        externalScan: { status: 'unavailable', mode: attestations.mode, requiredForRelease: attestations.requiredForRelease, error: error?.code ?? 'external_scan_store_unavailable' }
+      };
+    }
+  }
+
+  function withExternalScan(tenantId, item) {
+    if (!item || item.status === 'disposed') return item;
+    const latest = attestations.latest(tenantId, item.evidenceId, item.currentVersion);
+    return { ...item, externalScan: latest };
+  }
+
+  return Object.freeze({
+    ...registry,
+    get,
+    list,
+    screeningReport,
+    releaseQuarantine,
+    verify,
+    health,
+    tenantStatus,
+    recordExternalScanAttestation,
+    externalScanAttestations,
+    externalScanStatus,
+    externalScanEnabled: attestations.enabled
+  });
+}
+
+export function createExternalScanEvidenceRegistryFromEnvironment(env = process.env) {
+  const registry = createScreenedEvidenceRegistryFromEnvironment(env);
+  const attestations = createExternalScanAttestationRegistryFromEnvironment({ env, evidenceRegistry: registry });
+  if (!registry.enabled && attestations.enabled) throw new EvidenceConflictError('External scanner attestations require enabled evidence custody.');
+  return createExternalScanEvidenceRegistry({ registry, attestations });
+}
+
+function createPolicyMutex(registry, scannerEnabled) {
+  if (!scannerEnabled || !registry.enabled || !registry.directory) {
+    return Object.freeze({
+      withLock(_resource, operation) { return operation(); },
+      health() { return { status: 'ready', mode: scannerEnabled ? 'in-process-disabled-evidence-policy' : 'external-scanner-disabled' }; }
+    });
+  }
+  return createFileMutex({
+    directory: resolve(registry.directory, '.external-scan-policy-locks'),
+    leaseMs: 10_000,
+    acquireTimeoutMs: 2_000,
+    retryMs: 10
+  });
+}
