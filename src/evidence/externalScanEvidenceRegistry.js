@@ -150,7 +150,7 @@ export function createExternalScanEvidenceRegistry({
       const externalScan = attestations.tenantStatus(tenantId);
       const delivery = jobs.tenantStatus(tenantId);
       const unavailable = (externalScan.mode === 'enforce' && externalScan.status === 'unavailable')
-        || (jobs.required && delivery.status === 'unavailable');
+        || (jobs.required && (delivery.status === 'unavailable' || delivery.deadLetters > 0));
       const attention = externalScan.status === 'attention' || delivery.status === 'attention';
       return {
         ...base,
