@@ -97,9 +97,10 @@ export function createSecurityTelemetry({
     const archiveHealth = archive?.health?.() ?? {
       status: 'disabled', enabled: false, required: false, mode: 'disabled', durable: false, distributed: false
     };
-    const alertHealth = alertDispatcher?.health?.() ?? {
+    const rawAlertHealth = alertDispatcher?.health?.() ?? {
       status: 'disabled', enabled: false, required: false, mode: 'disabled'
     };
+    const alertHealth = redactOperationalPaths(rawAlertHealth);
     const archiveFailure = archiveHealth.required && archiveHealth.status !== 'ready';
     const alertFailure = alertHealth.required && alertHealth.status !== 'ready';
     const evidenceRequired = Boolean(archiveHealth.required || alertHealth.required);
@@ -166,6 +167,18 @@ export function createSecurityTelemetryFromEnvironment(
     archive,
     alertDispatcher: delivery
   });
+}
+
+function redactOperationalPaths(value) {
+  if (!value || typeof value !== 'object') return value;
+  const clone = structuredClone(value);
+  delete clone.directory;
+  if (clone.outbox && typeof clone.outbox === 'object') {
+    delete clone.outbox.directory;
+    if (clone.outbox.mutex && typeof clone.outbox.mutex === 'object') delete clone.outbox.mutex.directory;
+  }
+  if (clone.mutex && typeof clone.mutex === 'object') delete clone.mutex.directory;
+  return clone;
 }
 
 function hashValue(value) {
