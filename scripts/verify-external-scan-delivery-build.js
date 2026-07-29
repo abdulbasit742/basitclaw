@@ -81,7 +81,7 @@ await requireMarkers('docs/external-scan-delivery.md', 'Scanner delivery runbook
   'dead-letter job'
 ]);
 await requireMarkers('docs/external-scan-delivery-lifecycle.md', 'Scanner delivery lifecycle runbook', [
-  'claim byte budget',
+  'Claim byte budget',
   'primaryPublicKeyId',
   'attestation_timeout',
   'EXTERNAL_SCAN_CLAIM_BUDGET_EXCEEDED'
