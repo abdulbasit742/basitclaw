@@ -3,8 +3,15 @@ import { timingSafeEqual } from 'node:crypto';
 const ROLE_PERMISSIONS = Object.freeze({
   audit_viewer: ['audit:read'],
   auditor: ['audit:read', 'fieldwork:write', 'finding:write'],
-  audit_manager: ['audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read', 'backup:read', 'backup:write'],
-  compliance_admin: ['audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read', 'backup:read', 'backup:write', 'backup:restore']
+  audit_manager: [
+    'audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read',
+    'backup:read', 'backup:write', 'replica:read', 'replica:write', 'resilience:read', 'drill:run'
+  ],
+  compliance_admin: [
+    'audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read',
+    'backup:read', 'backup:write', 'backup:restore', 'replica:read', 'replica:write',
+    'resilience:read', 'resilience:run', 'drill:run'
+  ]
 });
 
 export class AuthenticationError extends Error {
@@ -48,7 +55,11 @@ export function createAccessController({ principals = loadPrincipalsFromEnvironm
     return principal;
   }
 
-  return { authenticate, authorise, principalCount: records.length };
+  function tenantIds() {
+    return [...new Set(records.map((record) => record.tenantId))];
+  }
+
+  return { authenticate, authorise, tenantIds, principalCount: records.length };
 }
 
 export function permissionsForRole(role) {
