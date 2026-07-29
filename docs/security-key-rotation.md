@@ -46,9 +46,9 @@ Outbound requests include `x-basitclaw-key-id`. Receivers must choose the matchi
 3. Switch `WORKFORCE_AUDIT_SECURITY_ALERT_PRIMARY_SIGNING_KEY_ID` to the new key.
 4. Verify successful deliveries signed with the new key ID.
 5. Maintain an overlap period longer than the maximum retry/dead-letter requeue window approved by operations.
-6. Run `npm run security-keys -- alert-can-retire <oldKeyId>`.
-7. Treat `receiver_overlap_must_be_confirmed` as a required external confirmation, not automatic approval.
-8. Remove the old secret from receivers first only after no queued/replayed delivery can require it; then remove it from senders.
+6. Run `npm run security-keys -- alert-can-retire <oldKeyId>`. It must return `receiver_overlap_confirmation_required` until external receiver checks are complete.
+7. After the receiver owner confirms every accepted endpoint has the new key and the overlap window has elapsed, run `npm run security-keys -- alert-can-retire <oldKeyId> --receiver-confirmed`.
+8. Remove the old secret only when the confirmed command returns `safe: true`; update receivers and senders through approved change control.
 
 ## Commands
 
@@ -56,6 +56,7 @@ Outbound requests include `x-basitclaw-key-id`. Receivers must choose the matchi
 npm run security-keys -- status
 npm run security-keys -- archive-can-retire 2026-q2
 npm run security-keys -- alert-can-retire 2026-q2
+npm run security-keys -- alert-can-retire 2026-q2 --receiver-confirmed
 ```
 
 The CLI intentionally prints key IDs but never secret material. Public health and dashboard responses expose only counts and readiness states.
@@ -65,8 +66,9 @@ The CLI intentionally prints key IDs but never secret material. Public health an
 - `missingKeyIds` means retained archive material references a key absent from configuration. Restore that key from approved custody before any retention or recovery action.
 - An invalid anchor or prune-journal signature means evidence integrity cannot be established. Preserve the archive mount and investigate; do not delete files or force readiness.
 - A primary key cannot be retired.
+- No archive key is declared safe while lifecycle inspection is unavailable.
 - A non-primary archive key cannot be retired while its reference count is non-zero.
-- Webhook retirement always requires receiver overlap confirmation because receiver key state is external to BasitClaw.
+- Webhook retirement always requires explicit receiver overlap confirmation because receiver key state is external to BasitClaw.
 
 ## Legacy migration
 
