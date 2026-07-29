@@ -1,6 +1,6 @@
 {
   "name": "basitclaw",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "description": "Workforce internal audit assurance and governance workspace.",
   "type": "module",
@@ -9,7 +9,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test",
-    "lint": "node --check src/server.js && node --check src/services/workforceAuditService.js && node --check src/services/workforceAuditRegistry.js && node --check src/services/governanceLedger.js && node --check src/security/accessControl.js && node --check src/security/rateLimiter.js && node --check src/security/securityTelemetry.js && node --check scripts/generate-api-credential.js && node --check src/persistence/encryptedSnapshotStore.js && node --check src/persistence/backupManager.js && node --check src/resilience/replicaManager.js && node --check src/resilience/resilienceScheduler.js && node --check src/coordination/fileLeaseCoordinator.js && node --check src/coordination/fencedSnapshotStore.js && node --check src/coordination/coordinatedRegistry.js",
+    "lint": "node --check src/server.js && node --check src/services/workforceAuditService.js && node --check src/services/workforceAuditRegistry.js && node --check src/services/governanceLedger.js && node --check src/security/accessControl.js && node --check src/security/rateLimiter.js && node --check src/security/sharedRateLimiter.js && node --check src/security/fileMutex.js && node --check src/security/securityTelemetry.js && node --check src/security/securityArchiveCodec.js && node --check src/security/securityArchiveFilesystem.js && node --check src/security/securityEventArchive.js && node --check scripts/generate-api-credential.js && node --check src/persistence/encryptedSnapshotStore.js && node --check src/persistence/backupManager.js && node --check src/resilience/replicaManager.js && node --check src/resilience/resilienceScheduler.js && node --check src/coordination/fileLeaseCoordinator.js && node --check src/coordination/fencedSnapshotStore.js && node --check src/coordination/coordinatedRegistry.js",
     "build": "node scripts/verify-build.js",
     "credential:generate": "node scripts/generate-api-credential.js"
   }
