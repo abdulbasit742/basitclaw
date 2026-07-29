@@ -12,12 +12,12 @@
     header p { max-width: 1000px; color: #d9e2ec; }
     main { padding: 24px clamp(20px, 5vw, 72px) 60px; }
     .auth, .grid { display: grid; gap: 16px; }
-    .auth { grid-template-columns: minmax(220px, 1fr) auto; align-items: end; margin-bottom: 20px; }
+    .auth { grid-template-columns: minmax(150px, .35fr) minmax(260px, 1fr) auto; align-items: end; margin-bottom: 20px; }
     .grid { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
     .card, section, .auth { background: white; border: 1px solid #d9e2ec; border-radius: 14px; box-shadow: 0 8px 22px rgba(16,42,67,.06); }
     .auth, .card, section { padding: 18px; }
     label { display: grid; gap: 7px; font-weight: 650; }
-    input, button { font: inherit; padding: 10px 12px; border-radius: 9px; border: 1px solid #9fb3c8; }
+    input, select, button { font: inherit; padding: 10px 12px; border-radius: 9px; border: 1px solid #9fb3c8; }
     button { background: #176b45; color: white; border: 0; cursor: pointer; font-weight: 700; }
     .metric { font-size: 2rem; font-weight: 750; margin: 6px 0; }
     section { margin-top: 22px; overflow-x: auto; }
@@ -29,19 +29,26 @@
     .warning { background: #fff8e1; color: #8a5d00; }
     .muted { color: #627d98; }
     #error { color: #9b2c2c; margin-top: 16px; }
-    @media (max-width: 620px) { .auth { grid-template-columns: 1fr; } }
+    @media (max-width: 760px) { .auth { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
 <header>
   <h1>Workforce Audit Assurance</h1>
-  <p>Tenant-isolated audit readiness with encrypted persistence, governed recovery, fenced writes, lifecycle-managed credentials and evidence keys, distributed abuse controls, encrypted evidence, and signed security alert delivery.</p>
+  <p>Tenant-isolated audit readiness with enterprise bearer authentication, lifecycle-managed API credentials and evidence keys, encrypted persistence, governed recovery, fenced writes, distributed abuse controls, encrypted evidence, and signed security alert delivery.</p>
 </header>
 <main>
   <form id="auth" class="auth">
-    <label>API key<input id="apiKey" type="password" autocomplete="current-password" placeholder="Enter your workforce-audit API key" required></label>
+    <label>Authentication
+      <select id="authMethod">
+        <option value="api-key">API key</option>
+        <option value="bearer">OIDC bearer token</option>
+      </select>
+    </label>
+    <label><span id="credentialLabel">API key</span><input id="credential" type="password" autocomplete="current-password" placeholder="Enter your workforce-audit API key" required></label>
     <button type="submit">Load assurance workspace</button>
   </form>
+  <p class="muted">Bearer tokens are retained only in this page's memory and are not stored in session storage.</p>
   <p id="identity" class="muted"></p>
   <div id="metrics" class="grid" aria-live="polite"></div>
   <div id="error" role="alert"></div>
@@ -74,11 +81,26 @@
 </main>
 <script>
   const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
-  const apiKeyInput = document.querySelector('#apiKey');
-  apiKeyInput.value = sessionStorage.getItem('workforceAuditApiKey') || '';
+  const methodInput = document.querySelector('#authMethod');
+  const credentialInput = document.querySelector('#credential');
+  const credentialLabel = document.querySelector('#credentialLabel');
+  methodInput.value = sessionStorage.getItem('workforceAuditAuthMethod') || 'api-key';
+
+  function configureCredential({ restoreApiKey = false } = {}) {
+    const bearer = methodInput.value === 'bearer';
+    credentialLabel.textContent = bearer ? 'OIDC bearer token' : 'API key';
+    credentialInput.placeholder = bearer ? 'Paste a short-lived bearer access token' : 'Enter your workforce-audit API key';
+    credentialInput.autocomplete = bearer ? 'off' : 'current-password';
+    if (bearer) credentialInput.value = '';
+    else if (restoreApiKey) credentialInput.value = sessionStorage.getItem('workforceAuditApiKey') || '';
+  }
+
+  configureCredential({ restoreApiKey: true });
+  methodInput.addEventListener('change', () => configureCredential({ restoreApiKey: true }));
   document.querySelector('#auth').addEventListener('submit', (event) => {
     event.preventDefault();
-    sessionStorage.setItem('workforceAuditApiKey', apiKeyInput.value);
+    sessionStorage.setItem('workforceAuditAuthMethod', methodInput.value);
+    if (methodInput.value === 'api-key') sessionStorage.setItem('workforceAuditApiKey', credentialInput.value);
     load();
   });
 
@@ -103,13 +125,17 @@
         canReadSecurity ? secureFetch('/api/workforce-audit/security-events?limit=50').catch(() => null) : Promise.resolve(null)
       ]);
       const rotationNotice = session.rotationRequired ? ' · rotation required' : '';
-      document.querySelector('#identity').textContent = `${session.subject} · ${session.role} · ${session.tenantId} · ${session.keyId}${rotationNotice}`;
+      document.querySelector('#identity').textContent = `${session.subject} · ${session.role} · ${session.tenantId} · ${session.authMethod || 'api_key'}${rotationNotice}`;
       const alertDelivery = security?.telemetry?.alertDelivery;
       const archiveKeys = security?.telemetry?.keyLifecycle?.archive;
       const alertKeys = security?.telemetry?.keyLifecycle?.alertSigning;
+      const oidc = security?.credentials?.oidc;
       const cards = [
         ['Audit areas ready', `${overview.universe.ready}/${overview.universe.total}`],
         ['Active engagements', overview.engagements.active], ['High-risk findings', overview.findings.criticalOrHigh],
+        ['Authentication mode', security?.credentials?.authenticationMode ?? session.authMethod ?? 'restricted'],
+        ['Federated identity', oidc?.status ?? (session.authMethod === 'oidc' ? 'active' : 'disabled')],
+        ['JWKS cache', oidc?.cacheState ?? 'restricted'],
         ['Encrypted storage', persistence?.status ?? 'restricted'], ['Recovery points', backups ? backups.length : 'restricted'],
         ['Replica status', resilience?.replicaHealth?.status ?? 'restricted'], ['Recovery drill', resilience?.drill?.status ?? 'restricted'],
         ['Write coordination', coordination?.enabled ? coordination.status : 'disabled'],
@@ -142,15 +168,18 @@
   }
 
   async function secureFetch(path) {
-    const apiKey = apiKeyInput.value.trim();
-    if (!apiKey) throw new Error('Enter an API key.');
-    const response = await fetch(path, { headers: { 'x-api-key': apiKey } });
+    const credential = credentialInput.value.trim();
+    if (!credential) throw new Error(methodInput.value === 'bearer' ? 'Enter a bearer access token.' : 'Enter an API key.');
+    const headers = methodInput.value === 'bearer'
+      ? { authorization: `Bearer ${credential}` }
+      : { 'x-api-key': credential };
+    const response = await fetch(path, { headers });
     const payload = await response.json();
     if (!response.ok || !payload.success) throw new Error(payload.error || 'Request failed');
     return payload.data;
   }
 
-  if (apiKeyInput.value) load();
+  if (credentialInput.value) load();
 </script>
 </body>
 </html>
