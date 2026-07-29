@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { SecurityControlBusyError, SecurityControlUnavailableError } from '../security/fileMutex.js';
+import { publicEvidenceHealth } from './evidenceHealthView.js';
 import {
   EvidenceConflictError,
   EvidenceIntegrityError,
@@ -27,7 +28,7 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
     try {
       if (req.method === 'GET' && url.pathname === `${PREFIX}/status`) {
         authenticationGateway.authorise(principal, 'audit:read');
-        return sendJson(res, 200, { success: true, data: publicStatus(registry.tenantStatus(principal.tenantId)), meta: meta(requestId, principal) }, requestId);
+        return sendJson(res, 200, { success: true, data: publicEvidenceHealth(registry.tenantStatus(principal.tenantId)), meta: meta(requestId, principal) }, requestId);
       }
       if (req.method === 'GET' && url.pathname === PREFIX) {
         authenticationGateway.authorise(principal, 'audit:read');
@@ -157,7 +158,7 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
     }
   }
 
-  return { matches, handle, health: () => publicStatus(registry.health()), prefix: PREFIX };
+  return { matches, handle, health: () => publicEvidenceHealth(registry.health()), prefix: PREFIX };
 }
 
 function withReferences(item, auditRegistry, tenantId) { return { ...item, referencedByFindings: findingReferences(auditRegistry, tenantId, item.evidenceId) }; }
@@ -176,7 +177,6 @@ function positiveInteger(value, fallback, maximum) { if (value === null) return 
 function optionalPositiveInteger(value) { if (value === null) return null; const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1) throw new EvidenceValidationError('version must be a positive integer.', { field: 'version' }); return parsed; }
 function optionalEnum(value, allowed) { if (value === null) return null; if (!allowed.includes(value)) throw new EvidenceValidationError('status filter is invalid.', { field: 'status', allowed }); return value; }
 function optionalBoolean(value) { if (value === null) return null; if (value === 'true') return true; if (value === 'false') return false; throw new EvidenceValidationError('legalHold must be true or false.', { field: 'legalHold' }); }
-function publicStatus(value) { if (!value || typeof value !== 'object') return value; const clone = structuredClone(value); delete clone.directory; delete clone.primaryKeyId; delete clone.configuredKeyIds; if (clone.mutex) delete clone.mutex.directory; return clone; }
 function meta(requestId, principal) { return { requestId, tenantId: principal?.tenantId ?? null, keyId: principal?.keyId ?? null }; }
 function event(type, severity, principal, req, requestId, data) { return { type, severity, outcome: 'success', requestId, subject: principal.subject, tenantId: principal.tenantId, keyId: principal.keyId, method: req.method, route: new URL(req.url ?? '/', 'http://localhost').pathname, details: { evidenceId: data.evidenceId, status: data.status, currentVersion: data.currentVersion } }; }
 function record(telemetry, input) { try { telemetry?.record?.(input); } catch (error) { console.error('Evidence telemetry record failed', error); } }
