@@ -1,14 +1,11 @@
 import { fileURLToPath } from 'node:url';
-import { createEvidenceAwareApp, prepareEvidenceLifecycle } from './evidence/evidenceServer.js';
-import { createExternalScanEvidenceRegistryFromEnvironment } from './evidence/externalScanEvidenceRegistry.js';
+import { prepareEvidenceLifecycle } from './evidence/evidenceServer.js';
+import { createExternalScanAwareApp } from './evidence/externalScanServer.js';
 import { prepareIdentityLifecycle, prepareIdentityProvider } from './runtime.js';
 
 export async function startEvidenceRuntime({
   env = process.env,
-  app = createEvidenceAwareApp({
-    env,
-    evidenceRegistry: createExternalScanEvidenceRegistryFromEnvironment(env)
-  }),
+  app = createExternalScanAwareApp({ env }),
   logger = console
 } = {}) {
   const identity = await prepareIdentityProvider({ authenticationGateway: app.authenticationGateway, env, logger });
