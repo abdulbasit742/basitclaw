@@ -1,9 +1,9 @@
-import { createEvidenceRegistryFromEnvironment } from '../src/evidence/evidenceRegistry.js';
+import { createScreenedEvidenceRegistryFromEnvironment } from '../src/evidence/evidenceScreeningRegistry.js';
 
 export function runEvidenceCommand(argv = process.argv.slice(2), env = process.env, output = console.log) {
   const [command = 'status', tenantId, argument, rawLimit] = argv;
   if (!tenantId) throw commandError('A tenant ID is required.');
-  const registry = createEvidenceRegistryFromEnvironment(env);
+  const registry = createScreenedEvidenceRegistryFromEnvironment(env);
   let result;
   if (command === 'status') {
     result = registry.tenantStatus(tenantId);
@@ -14,8 +14,14 @@ export function runEvidenceCommand(argv = process.argv.slice(2), env = process.e
   } else if (command === 'events') {
     const evidenceId = argument && argument !== '-' ? argument : null;
     result = registry.events(tenantId, { evidenceId, limit: positive(rawLimit ?? 100, 'limit', 5000) });
+  } else if (command === 'screening') {
+    if (!argument) throw commandError('An evidence ID is required for screening.');
+    result = registry.screeningReport(tenantId, argument);
+  } else if (command === 'screening-events') {
+    const evidenceId = argument && argument !== '-' ? argument : null;
+    result = registry.screeningEvents(tenantId, { evidenceId, limit: positive(rawLimit ?? 100, 'limit', 5000) });
   } else {
-    throw commandError('Command must be status, verify, list, or events.');
+    throw commandError('Command must be status, verify, list, events, screening, or screening-events.');
   }
   output(JSON.stringify(result, null, 2));
   return result;
