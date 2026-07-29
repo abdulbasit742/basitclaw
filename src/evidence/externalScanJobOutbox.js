@@ -9,8 +9,8 @@ import {
   randomUUID,
   timingSafeEqual
 } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { basename, resolve } from 'node:path';
 import { createFileMutex } from '../security/fileMutex.js';
 import {
   atomicWriteEvidenceJson,
@@ -98,59 +98,69 @@ export function createExternalScanJobOutbox({
     const jobId = jobIdFor(content, providerId);
 
     return lock.withLock('external-scan-job-outbox', () => {
-      recoverStaleLocked();
+      recoverLocked();
       const existing = locate(jobId);
       if (existing) {
         const record = readRecord(existing.path);
-        return { queued: false, duplicate: true, job: publicJob(record, decryptManagement(record)) };
+        const management = decryptManagement(record);
+        if (record.state !== 'dead-letter') {
+          return { queued: false, duplicate: true, requeued: false, job: publicJob(record, management) };
+        }
+        const replacement = newRecord({ content, providerId, delivery, queuedBy, jobId });
+        writeAndMove(existing.path, resolve(stateDirectories.pending, `${jobId}.json`), replacement);
+        return { queued: true, duplicate: false, requeued: true, job: publicJob(replacement, decryptManagement(replacement)) };
       }
-      const createdAt = now().toISOString();
-      const expiresAt = new Date(now().getTime() + ttlMinutes * 60_000).toISOString();
-      const management = {
-        tenantId: content.tenantId,
-        evidenceId: content.evidenceId,
-        evidenceVersion: content.version,
-        contentSha256: content.contentSha256,
-        sizeBytes: content.sizeBytes,
-        filename: content.filename,
-        mediaType: content.mediaType,
-        queuedBy
-      };
-      const sealedPackage = sealPackage({
-        content,
-        providerId,
-        deliveryKeyId: delivery.keyId,
-        publicKey: delivery.publicKey,
-        jobId,
-        createdAt,
-        expiresAt
-      });
-      const record = {
-        format: RECORD_FORMAT,
-        version: 1,
-        jobId,
-        providerId,
-        deliveryKeyId: delivery.keyId,
-        state: 'pending',
-        createdAt,
-        updatedAt: createdAt,
-        expiresAt,
-        attempts: 0,
-        nextAttemptAt: createdAt,
-        claimToken: null,
-        claimedAt: null,
-        claimExpiresAt: null,
-        deliveredAt: null,
-        completedAt: null,
-        deadLetteredAt: null,
-        result: null,
-        packageSha256: packageHash(sealedPackage),
-        package: sealedPackage,
-        management: encryptEvidenceJson(management, keyring, managementAad(jobId))
-      };
+      const record = newRecord({ content, providerId, delivery, queuedBy, jobId });
       writeRecord(resolve(stateDirectories.pending, `${jobId}.json`), record);
-      return { queued: true, duplicate: false, job: publicJob(record, management) };
+      return { queued: true, duplicate: false, requeued: false, job: publicJob(record, decryptManagement(record)) };
     });
+  }
+
+  function newRecord({ content, providerId, delivery, queuedBy, jobId }) {
+    const createdAt = now().toISOString();
+    const expiresAt = new Date(now().getTime() + ttlMinutes * 60_000).toISOString();
+    const management = {
+      tenantId: content.tenantId,
+      evidenceId: content.evidenceId,
+      evidenceVersion: content.version,
+      contentSha256: content.contentSha256,
+      sizeBytes: content.sizeBytes,
+      filename: content.filename,
+      mediaType: content.mediaType,
+      queuedBy
+    };
+    const sealedPackage = sealPackage({
+      content,
+      providerId,
+      deliveryKeyId: delivery.keyId,
+      publicKey: delivery.publicKey,
+      jobId,
+      createdAt,
+      expiresAt
+    });
+    return {
+      format: RECORD_FORMAT,
+      version: 1,
+      jobId,
+      providerId,
+      deliveryKeyId: delivery.keyId,
+      state: 'pending',
+      createdAt,
+      updatedAt: createdAt,
+      expiresAt,
+      attempts: 0,
+      nextAttemptAt: createdAt,
+      claimToken: null,
+      claimedAt: null,
+      claimExpiresAt: null,
+      deliveredAt: null,
+      completedAt: null,
+      deadLetteredAt: null,
+      result: null,
+      packageSha256: packageHash(sealedPackage),
+      package: sealedPackage,
+      management: encryptEvidenceJson(management, keyring, managementAad(jobId))
+    };
   }
 
   function claimSigned(bodyBuffer, headers = {}) {
@@ -159,12 +169,13 @@ export function createExternalScanJobOutbox({
     const limit = integer(input.limit ?? 1, 'limit', 1, 25);
     return lock.withLock('external-scan-job-outbox', () => {
       consumeReplayLocked(auth);
-      recoverStaleLocked();
+      recoverLocked();
       const claimed = [];
       for (const filename of jsonNames(stateDirectories.pending)) {
         if (claimed.length >= limit) break;
         const source = resolve(stateDirectories.pending, filename);
         const record = readRecord(source);
+        if (record.state !== 'pending') throw new EvidenceIntegrityError('An external scan job is stored in the wrong state directory.', { jobId: record.jobId });
         if (record.providerId !== auth.providerId) continue;
         if (new Date(record.nextAttemptAt).getTime() > now().getTime()) continue;
         if (new Date(record.expiresAt).getTime() <= now().getTime()) {
@@ -199,6 +210,7 @@ export function createExternalScanJobOutbox({
     const claimToken = identifier(input.claimToken, 'claimToken');
     return lock.withLock('external-scan-job-outbox', () => {
       consumeReplayLocked(auth);
+      recoverLocked();
       const id = safeJobId(jobId);
       const source = resolve(stateDirectories.inflight, `${id}.json`);
       const record = readOwnedClaim(source, auth.providerId, claimToken);
@@ -215,7 +227,6 @@ export function createExternalScanJobOutbox({
         result: { delivery: 'acknowledged' }
       };
       writeAndMove(source, resolve(stateDirectories.delivered, `${id}.json`), next);
-      pruneLocked(stateDirectories.delivered, completedLimit);
       return publicJob(next, decryptManagement(next));
     });
   }
@@ -228,6 +239,7 @@ export function createExternalScanJobOutbox({
     const reasonCode = safeReasonCode(input.reasonCode);
     return lock.withLock('external-scan-job-outbox', () => {
       consumeReplayLocked(auth);
+      recoverLocked();
       const id = safeJobId(jobId);
       const source = resolve(stateDirectories.inflight, `${id}.json`);
       const record = readOwnedClaim(source, auth.providerId, claimToken);
@@ -260,6 +272,7 @@ export function createExternalScanJobOutbox({
       contentSha256: attestation.contentSha256
     }, attestation.providerId);
     return lock.withLock('external-scan-job-outbox', () => {
+      recoverLocked();
       const located = locate(jobId);
       if (!located) return { matched: false, jobId };
       const record = readRecord(located.path);
@@ -299,11 +312,12 @@ export function createExternalScanJobOutbox({
     const tenant = identifier(tenantId, 'tenantId');
     const evidence = evidenceId === null ? null : safeEvidenceId(evidenceId);
     return lock.withLock('external-scan-job-outbox', () => {
-      recoverStaleLocked();
+      recoverLocked();
       const rows = [];
       for (const state of STATES) {
         for (const filename of jsonNames(stateDirectories[state])) {
           const record = readRecord(resolve(stateDirectories[state], filename));
+          if (record.state !== state) throw new EvidenceIntegrityError('An external scan job is stored in the wrong state directory.', { jobId: record.jobId, state });
           const management = decryptManagement(record);
           if (management.tenantId !== tenant || (evidence && management.evidenceId !== evidence)) continue;
           rows.push(publicJob(record, management));
@@ -324,15 +338,16 @@ export function createExternalScanJobOutbox({
     const deadLetters = count('dead-letter');
     const pending = count('pending');
     const inflight = count('inflight');
+    const delivered = count('delivered');
     return {
-      status: deadLetters || pending || inflight ? 'attention' : 'ready',
+      status: deadLetters || pending || inflight || delivered ? 'attention' : 'ready',
       enabled: true,
       required: isRequired,
       mode: selectedMode,
       total: jobs.length,
       pending,
       inflight,
-      delivered: count('delivered'),
+      delivered,
       completed: count('completed'),
       deadLetters
     };
@@ -341,10 +356,12 @@ export function createExternalScanJobOutbox({
   function verify(tenantId) {
     const tenant = identifier(tenantId, 'tenantId');
     return lock.withLock('external-scan-job-outbox', () => {
+      recoverLocked();
       let checkedJobs = 0;
       for (const state of STATES) {
         for (const filename of jsonNames(stateDirectories[state])) {
           const record = readRecord(resolve(stateDirectories[state], filename));
+          if (record.state !== state) throw new EvidenceIntegrityError('An external scan job is stored in the wrong state directory.', { jobId: record.jobId, state });
           const management = decryptManagement(record);
           if (management.tenantId !== tenant) continue;
           if (record.package && packageHash(record.package) !== record.packageSha256) {
@@ -359,25 +376,29 @@ export function createExternalScanJobOutbox({
 
   function health() {
     try {
-      for (const path of [root, replayDirectory, ...Object.values(stateDirectories)]) ensureDirectory(path);
-      const counts = Object.fromEntries(STATES.map((state) => [state, jsonNames(stateDirectories[state]).length]));
-      return {
-        status: counts['dead-letter'] ? 'degraded' : 'ready',
-        enabled: true,
-        required: isRequired,
-        mode: selectedMode,
-        durable: true,
-        distributed: true,
-        plaintextQueued: false,
-        publicKeySealed: true,
-        requestReplayProtected: true,
-        providerCount: providerMap.size,
-        jobTtlMinutes: ttlMinutes,
-        claimLeaseMs: leaseMs,
-        maxAttempts: attemptsLimit,
-        counts,
-        mutex: lock.health()
-      };
+      return lock.withLock('external-scan-job-outbox', () => {
+        for (const path of [root, replayDirectory, ...Object.values(stateDirectories)]) ensureDirectory(path);
+        recoverLocked();
+        const counts = Object.fromEntries(STATES.map((state) => [state, jsonNames(stateDirectories[state]).length]));
+        return {
+          status: counts['dead-letter'] ? 'degraded' : 'ready',
+          enabled: true,
+          required: isRequired,
+          mode: selectedMode,
+          durable: true,
+          distributed: true,
+          encryptedRecords: true,
+          plaintextQueued: false,
+          publicKeySealed: true,
+          requestReplayProtected: true,
+          providerCount: providerMap.size,
+          jobTtlMinutes: ttlMinutes,
+          claimLeaseMs: leaseMs,
+          maxAttempts: attemptsLimit,
+          counts,
+          mutex: lock.health()
+        };
+      });
     } catch (error) {
       return { status: 'unavailable', enabled: true, required: isRequired, mode: selectedMode, error: error?.code ?? 'external_scan_job_store_unavailable' };
     }
@@ -422,14 +443,12 @@ export function createExternalScanJobOutbox({
     pruneReplaysLocked();
     const path = resolve(replayDirectory, `${authentication.replayId}.json`);
     if (existsSync(path)) throw new ExternalScanAuthenticationError('External scanner request replay was rejected.', { reason: 'replay_detected' });
-    atomicWriteEvidenceJson(path, {
+    atomicWriteEvidenceJson(path, encryptEvidenceJson({
       version: 1,
       replayId: authentication.replayId,
-      providerId: authentication.providerId,
-      keyId: authentication.keyId,
       acceptedAt: now().toISOString(),
       expiresAt: new Date(now().getTime() + skewSeconds * 2_000).toISOString()
-    });
+    }, keyring, replayAad(authentication.replayId)));
   }
 
   function pruneReplaysLocked() {
@@ -437,15 +456,17 @@ export function createExternalScanJobOutbox({
     for (const filename of readdirSync(replayDirectory).filter((name) => /^[a-f0-9]{64}\.json$/.test(name))) {
       const path = resolve(replayDirectory, filename);
       try {
-        const replay = readEvidenceJson(path);
-        if (new Date(replay.expiresAt).getTime() <= current) rmSync(path, { force: true });
+        const replayId = filename.slice(0, -5);
+        const replay = decryptEvidenceJson(readEvidenceJson(path), keyring, replayAad(replayId), EvidenceIntegrityError);
+        if (replay.replayId !== replayId || new Date(replay.expiresAt).getTime() <= current) rmSync(path, { force: true });
       } catch {
         rmSync(path, { force: true });
       }
     }
   }
 
-  function recoverStaleLocked() {
+  function recoverLocked() {
+    reconcileLocationsLocked();
     for (const filename of jsonNames(stateDirectories.inflight)) {
       const source = resolve(stateDirectories.inflight, filename);
       const record = readRecord(source);
@@ -469,6 +490,19 @@ export function createExternalScanJobOutbox({
     }
   }
 
+  function reconcileLocationsLocked() {
+    for (const directoryState of STATES) {
+      for (const filename of jsonNames(stateDirectories[directoryState])) {
+        const source = resolve(stateDirectories[directoryState], filename);
+        const record = readRecord(source);
+        if (record.state === directoryState) continue;
+        const target = resolve(stateDirectories[record.state], filename);
+        if (existsSync(target)) throw new EvidenceIntegrityError('An external scan job exists in multiple state directories.', { jobId: record.jobId });
+        renameSync(source, target);
+      }
+    }
+  }
+
   function moveToDeadLocked(source, record, reasonCode) {
     const deadAt = now().toISOString();
     const next = {
@@ -485,6 +519,40 @@ export function createExternalScanJobOutbox({
     writeAndMove(source, resolve(stateDirectories['dead-letter'], `${record.jobId}.json`), next);
     pruneLocked(stateDirectories['dead-letter'], deadLimit);
     return next;
+  }
+
+  function readOwnedClaim(path, providerId, claimToken) {
+    const record = readRecord(path);
+    if (record.state !== 'inflight' || record.providerId !== providerId || record.claimToken !== claimToken
+        || new Date(record.claimExpiresAt ?? 0).getTime() <= now().getTime()) {
+      throw new EvidenceConflictError('The external scan delivery claim is no longer owned.', { jobId: record.jobId });
+    }
+    return record;
+  }
+
+  function readRecord(path) {
+    const jobId = jobIdFromPath(path);
+    if (!existsSync(path)) throw new EvidenceConflictError('The external scan job was not found or is no longer claimable.', { jobId });
+    let envelope;
+    try { envelope = readEvidenceJson(path); }
+    catch (error) { throw new ExternalScanJobStoreError('An external scan job record is unreadable.', { jobId }, error); }
+    const record = decryptEvidenceJson(envelope, keyring, recordAad(jobId), EvidenceIntegrityError);
+    validateRecord(record);
+    if (record.jobId !== jobId) throw new EvidenceIntegrityError('External scan job filename and record identity do not match.', { jobId });
+    return record;
+  }
+
+  function writeRecord(path, record) {
+    validateRecord(record);
+    atomicWriteEvidenceJson(path, encryptEvidenceJson(record, keyring, recordAad(record.jobId)));
+  }
+
+  function writeAndMove(source, target, record) {
+    if (source === target) return writeRecord(source, record);
+    if (!existsSync(source)) throw new EvidenceConflictError('The external scan job source state no longer exists.', { jobId: record.jobId });
+    if (existsSync(target)) throw new EvidenceIntegrityError('The external scan job target state already exists.', { jobId: record.jobId });
+    writeRecord(source, record);
+    renameSync(source, target);
   }
 
   function decryptManagement(record) {
@@ -635,29 +703,12 @@ function validateContentRecord(input) {
   if (sha256(input.content) !== contentSha256 || input.content.length !== Number(input.sizeBytes)) throw new EvidenceIntegrityError('Verified scanner delivery content no longer matches its immutable digest.', { evidenceId, version });
   return { ...input, tenantId, evidenceId, version, contentSha256, sizeBytes: input.content.length };
 }
-function readOwnedClaim(path, providerId, claimToken) {
-  const record = readRecord(path);
-  if (record.state !== 'inflight' || record.providerId !== providerId || record.claimToken !== claimToken) {
-    throw new EvidenceConflictError('The external scan delivery claim is no longer owned.', { jobId: record.jobId });
-  }
-  return record;
-}
-function readRecord(path) {
-  if (!existsSync(path)) throw new EvidenceConflictError('The external scan job was not found or is no longer claimable.');
-  let record;
-  try { record = readEvidenceJson(path); }
-  catch (error) { throw new ExternalScanJobStoreError('An external scan job record is unreadable.', {}, error); }
-  validateRecord(record);
-  return record;
-}
 function validateRecord(record) {
   if (!record || record.format !== RECORD_FORMAT || record.version !== 1 || !JOB_ID.test(record.jobId)
       || !STATES.includes(record.state) || !record.management || !HASH.test(record.packageSha256)) {
     throw new EvidenceIntegrityError('An external scan job record is invalid.', { jobId: record?.jobId ?? null });
   }
 }
-function writeRecord(path, record) { validateRecord(record); atomicWriteEvidenceJson(path, record); }
-function writeAndMove(source, target, record) { writeRecord(target, record); if (source !== target) rmSync(source, { force: true }); }
 function publicJob(record, management) {
   return {
     jobId: record.jobId,
@@ -679,8 +730,11 @@ function publicJob(record, management) {
   };
 }
 function packageHash(value) { return sha256(Buffer.from(JSON.stringify(value))); }
+function recordAad(jobId) { return `basitclaw:external-scan-job-record:${jobId}`; }
 function managementAad(jobId) { return `basitclaw:external-scan-job-management:${jobId}`; }
+function replayAad(replayId) { return `basitclaw:external-scan-job-replay:${replayId}`; }
 function packageAad(jobId, providerId, keyId) { return `basitclaw:external-scan-job:${jobId}:${providerId}:${keyId}`; }
+function jobIdFromPath(path) { const name = basename(path); const id = name.endsWith('.json') ? name.slice(0, -5) : ''; return safeJobId(id); }
 function ensureDirectory(path) { mkdirSync(path, { recursive: true, mode: 0o700 }); }
 function jsonNames(directory) { return readdirSync(directory).filter((name) => /^SCNJOB-[a-f0-9]{32}\.json$/.test(name)).sort(); }
 function pruneLocked(directory, limit) { const names = jsonNames(directory); for (const name of names.slice(0, Math.max(0, names.length - limit))) rmSync(resolve(directory, name), { force: true }); }
