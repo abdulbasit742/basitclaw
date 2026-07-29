@@ -30,13 +30,14 @@ await requireMarkers('src/evidence/externalScanJobOutbox.js', 'Sealed scanner jo
   'requestReplayProtected',
   'plaintextQueued: false',
   'completeFromAttestation',
-  'external-scan-release-policy'
+  'request-replays'
 ]);
 await requireMarkers('src/evidence/externalScanEvidenceRegistry.js', 'Scanner job evidence composition', [
   'Only quarantined evidence versions can be queued',
   'queueExternalScanJob',
   'completeFromAttestation',
-  'externalScanDelivery'
+  'externalScanDelivery',
+  'external-scan-release-policy'
 ]);
 await requireMarkers('src/evidence/externalScanJobGovernanceHandler.js', 'Scanner job governance API', [
   '/external-scan-jobs',
@@ -63,6 +64,12 @@ await requireMarkers('config/evidence-screening.production.env.example', 'Produc
   'WORKFORCE_AUDIT_EXTERNAL_SCAN_DELIVERY_MODE=pull',
   'WORKFORCE_AUDIT_EXTERNAL_SCAN_DELIVERY_REQUIRED=true',
   'publicKeys'
+]);
+await requireMarkers('public/workforce-audit.html', 'Scanner delivery dashboard', [
+  'Scan jobs pending',
+  'Scan jobs inflight',
+  'Scan delivery dead letters',
+  'Plaintext queued'
 ]);
 
 console.log('External scanner sealed-delivery build verification passed.');
