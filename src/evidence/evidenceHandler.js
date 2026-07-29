@@ -84,7 +84,8 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
       if (actionMatch) {
         const evidenceId = decodeURIComponent(actionMatch[1]);
         const action = actionMatch[2];
-        if (req.method === 'GET' && action === 'events') {
+        if (action === 'events') {
+          if (req.method !== 'GET') return notFound(res, requestId, principal);
           authenticationGateway.authorise(principal, 'governance:read');
           const data = registry.events(principal.tenantId, { evidenceId, limit: positiveInteger(url.searchParams.get('limit'), 100, 500) });
           return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId);
@@ -105,10 +106,12 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
         } else if (action === 'release-hold') {
           data = registry.releaseLegalHold(principal.tenantId, evidenceId, input, { actor: principal.subject });
           record(securityTelemetry, event('evidence.legal_hold_released', 'high', principal, req, requestId, data));
-        } else {
+        } else if (action === 'dispose') {
           const referencedBy = findingReferences(auditRegistry, principal.tenantId, evidenceId);
           data = registry.dispose(principal.tenantId, evidenceId, input, { actor: principal.subject, referencedBy });
           record(securityTelemetry, event('evidence.disposed', 'critical', principal, req, requestId, data));
+        } else {
+          return notFound(res, requestId, principal);
         }
         return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId);
       }
@@ -140,13 +143,11 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
 function withReferences(item, auditRegistry, tenantId) {
   return { ...item, referencedByFindings: findingReferences(auditRegistry, tenantId, item.evidenceId) };
 }
-
 function findingReferences(auditRegistry, tenantId, evidenceId) {
   return auditRegistry.forTenant(tenantId).getFindings()
     .filter((finding) => finding.evidenceRefs?.includes(evidenceId))
     .map((finding) => finding.id);
 }
-
 async function readJson(req) {
   const contentType = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
   if (contentType && contentType !== 'application/json') return invalidJson('Content-Type must be application/json.');
@@ -160,7 +161,6 @@ async function readJson(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
   catch { return invalidJson('Request body must be valid JSON.'); }
 }
-
 function invalidJson(message) { const error = new Error(message); error.code = 'INVALID_JSON'; throw error; }
 function positiveInteger(value, fallback, maximum) { if (value === null) return fallback; const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1) throw new EvidenceValidationError('limit must be a positive integer.', { field: 'limit' }); return Math.min(parsed, maximum); }
 function optionalPositiveInteger(value) { if (value === null) return null; const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1) throw new EvidenceValidationError('version must be a positive integer.', { field: 'version' }); return parsed; }
