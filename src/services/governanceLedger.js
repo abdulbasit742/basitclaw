@@ -28,15 +28,24 @@ export function createGovernanceLedger({ now = () => new Date() } = {}) {
   function importTenant(tenantId, importedEvents = []) {
     assertIdentifier(tenantId, 'tenantId');
     if (importedTenants.has(tenantId)) return;
-    if (!Array.isArray(importedEvents)) throw new TypeError('Imported governance events must be an array.');
-    const clones = importedEvents.map((event) => Object.freeze(structuredClone(event)));
+    replaceTenant(tenantId, importedEvents);
+  }
+
+  function replaceTenant(tenantId, replacementEvents = []) {
+    assertIdentifier(tenantId, 'tenantId');
+    if (!Array.isArray(replacementEvents)) throw new TypeError('Replacement governance events must be an array.');
+    const clones = replacementEvents.map((event) => Object.freeze(structuredClone(event)));
     for (const event of clones) {
-      if (event.tenantId !== tenantId) throw new TypeError('Imported governance event belongs to another tenant.');
+      if (event.tenantId !== tenantId) throw new TypeError('Replacement governance event belongs to another tenant.');
     }
     const verification = verifyEvents(clones);
-    if (!verification.valid) throw new TypeError(`Imported governance chain is invalid at ${verification.failedEventId}.`);
+    if (!verification.valid) throw new TypeError(`Replacement governance chain is invalid at ${verification.failedEventId}.`);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      if (events[index].tenantId === tenantId) events.splice(index, 1);
+    }
     events.push(...clones);
     importedTenants.add(tenantId);
+    return clones.length;
   }
 
   function list(tenantId, { limit = 100 } = {}) {
@@ -71,7 +80,7 @@ export function createGovernanceLedger({ now = () => new Date() } = {}) {
     }
   }
 
-  return { append, importTenant, list, exportTenant, verify, checkpoint, rollbackTo };
+  return { append, importTenant, replaceTenant, list, exportTenant, verify, checkpoint, rollbackTo };
 }
 
 export function hashEvent(event) {
