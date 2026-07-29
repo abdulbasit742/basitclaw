@@ -146,12 +146,17 @@ test('finding reference guard closes the disposition race', async (t) => {
     body: JSON.stringify({ evidenceRefs: [item.evidenceId] })
   });
   await findingStarted;
-  const disposePromise = fetch(`${base}/api/workforce-audit/evidence/${item.evidenceId}/dispose`, {
+  const firstDispose = await fetch(`${base}/api/workforce-audit/evidence/${item.evidenceId}/dispose`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ confirmation: `DISPOSE ${item.evidenceId}`, reason: 'Approved retention disposition after review' })
   });
+  assert.equal(firstDispose.status, 423);
+  assert.equal((await json(firstDispose)).code, 'EVIDENCE_STORE_BUSY');
   assert.equal((await findingPromise).status, 201);
-  const dispose = await disposePromise;
-  assert.equal(dispose.status, 409);
-  assert.equal((await json(dispose)).code, 'EVIDENCE_CONFLICT');
+  const retry = await fetch(`${base}/api/workforce-audit/evidence/${item.evidenceId}/dispose`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ confirmation: `DISPOSE ${item.evidenceId}`, reason: 'Approved retention disposition after review' })
+  });
+  assert.equal(retry.status, 409);
+  assert.equal((await json(retry)).code, 'EVIDENCE_CONFLICT');
 });
