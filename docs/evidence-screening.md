@@ -1,6 +1,6 @@
 # Evidence screening and quarantine
 
-BasitClaw screens every new evidence item and immutable evidence version before it can support an audit finding. Screening is deterministic and dependency-light: it detects executable signatures, the EICAR test signature, active scripts, MIME/extension mismatches, uninspected archive containers, private-key material, cloud/source-control credentials, and valid payment-card-number patterns.
+When screening is enabled, BasitClaw screens every new evidence item and immutable evidence version before it can support an audit finding. Screening is deterministic and dependency-light: it detects executable signatures, the EICAR test signature, active scripts, MIME/extension mismatches, uninspected archive containers, private-key material, cloud/source-control credentials, and valid payment-card-number patterns.
 
 The built-in engine is an admission-control baseline, not a replacement for a managed external antivirus, sandbox, or enterprise DLP platform. Production deployments should route released files through approved external scanning where regulation or risk requires deeper inspection.
 
@@ -20,7 +20,7 @@ Modes:
 - `observe`: findings are recorded as `wouldQuarantine=true`, but the version remains usable. Use only for controlled rollout.
 - `enforce`: suspicious versions are encrypted and quarantined immediately.
 
-`WORKFORCE_AUDIT_EVIDENCE_ARCHIVE_POLICY=review` quarantines ZIP and other archive containers because the built-in engine does not recursively unpack them. `allow` permits them to pass the container rule, but external deep scanning is still recommended.
+`WORKFORCE_AUDIT_EVIDENCE_ARCHIVE_POLICY=review` quarantines ZIP and other archive containers because the built-in engine does not recursively unpack them. This intentionally includes OOXML packages such as `.docx`, `.xlsx`, and `.pptx`: although they are normal business documents, they are ZIP containers whose embedded relationships and objects are outside the built-in scanner's inspection boundary. `allow` permits containers to pass this rule, but an approved external deep scanner should then inspect them before reliance.
 
 Screening uses the evidence encryption keyring and stores its own authenticated encrypted index and hash-linked event chain under the evidence directory. Keep historical evidence keys until all retained evidence and screening envelopes have been rotated or disposed through approved procedures.
 
@@ -35,7 +35,7 @@ A quarantined or rejected version:
 - can still be retained under legal hold;
 - can be disposed only through the normal retention, reference, hold, and JIT controls.
 
-The screening report contains rule IDs, category, severity, hashes, size, engine version, and timestamps. It never contains matched secret values or content excerpts.
+The screening report contains rule IDs, category, severity, content hash, size, engine version, and timestamps. It never contains matched secret values or content excerpts. Its original scan `decision` is immutable. A governed review changes only `accessDecision`, preserving the original verdict and findings permanently.
 
 A clean later version may restore an item whose earlier version was rejected. Earlier rejected or quarantined versions remain inaccessible.
 
@@ -59,7 +59,7 @@ A reviewer must independently inspect the alert, source, provenance, and busines
 RELEASE QUARANTINE EVD-...
 ```
 
-The decision changes only the selected immutable version's access state. It does not remove the original findings from the screening report. The release actor and reason remain encrypted in the screening registry; public metadata exposes only the action and review time.
+Release changes only the selected immutable version's access decision. It never rewrites the original scan decision or removes findings. The release actor and reason remain encrypted in the screening registry; public metadata exposes only the action and review time.
 
 ## Rejection
 
