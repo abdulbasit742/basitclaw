@@ -12,7 +12,7 @@ const POLICY_RESOURCE = 'external-scan-release-policy';
 export function createExternalScanEvidenceRegistry({ registry, attestations, policyMutex = null } = {}) {
   if (!registry || typeof registry.screeningReport !== 'function') throw new TypeError('A screened evidence registry is required.');
   if (!attestations || typeof attestations.list !== 'function') throw new TypeError('An external scan attestation registry is required.');
-  const policyLock = policyMutex ?? createPolicyMutex(registry);
+  const policyLock = policyMutex ?? createPolicyMutex(registry, attestations.enabled);
 
   function recordExternalScanAttestation(bodyBuffer, headers) {
     return policyLock.withLock(POLICY_RESOURCE, () => attestations.acceptSigned(bodyBuffer, headers, (attestation) => {
@@ -70,24 +70,31 @@ export function createExternalScanEvidenceRegistry({ registry, attestations, pol
     const base = registry.health();
     const externalScan = attestations.health();
     const policy = policyLock.health();
-    const unavailable = (externalScan.requiredForRelease && externalScan.status !== 'ready') || policy.status !== 'ready';
-    return { ...base, status: unavailable ? 'unavailable' : base.status, externalScan: { ...externalScan, policyMutex: policy } };
+    const enforced = externalScan.mode === 'enforce';
+    const unavailable = (enforced && externalScan.status !== 'ready') || (attestations.enabled && policy.status !== 'ready');
+    return {
+      ...base,
+      required: Boolean(base.required || enforced || externalScan.requiredForRelease),
+      status: unavailable ? 'unavailable' : base.status,
+      externalScan: { ...externalScan, policyMutex: policy }
+    };
   }
 
   function tenantStatus(tenantId) {
     const base = registry.tenantStatus(tenantId);
     try {
       const externalScan = attestations.tenantStatus(tenantId);
-      const unavailable = attestations.requiredForRelease && externalScan.status === 'unavailable';
+      const unavailable = externalScan.mode === 'enforce' && externalScan.status === 'unavailable';
       return {
         ...base,
         status: unavailable ? 'unavailable' : base.status === 'unavailable' ? 'unavailable' : externalScan.status === 'attention' ? 'attention' : base.status,
         externalScan
       };
     } catch (error) {
+      const enforced = attestations.mode === 'enforce' || attestations.requiredForRelease;
       return {
         ...base,
-        status: attestations.requiredForRelease ? 'unavailable' : base.status,
+        status: enforced ? 'unavailable' : base.status,
         externalScan: { status: 'unavailable', mode: attestations.mode, requiredForRelease: attestations.requiredForRelease, error: error?.code ?? 'external_scan_store_unavailable' }
       };
     }
@@ -122,11 +129,11 @@ export function createExternalScanEvidenceRegistryFromEnvironment(env = process.
   return createExternalScanEvidenceRegistry({ registry, attestations });
 }
 
-function createPolicyMutex(registry) {
-  if (!registry.enabled || !registry.directory) {
+function createPolicyMutex(registry, scannerEnabled) {
+  if (!scannerEnabled || !registry.enabled || !registry.directory) {
     return Object.freeze({
       withLock(_resource, operation) { return operation(); },
-      health() { return { status: 'ready', mode: 'in-process-disabled-evidence-policy' }; }
+      health() { return { status: 'ready', mode: scannerEnabled ? 'in-process-disabled-evidence-policy' : 'external-scanner-disabled' }; }
     });
   }
   return createFileMutex({
