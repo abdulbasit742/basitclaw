@@ -2,7 +2,7 @@
 
 BasitClaw is a dependency-light Node.js workspace for enterprise workforce internal-audit assurance.
 
-Passes 1–12 established the audit universe, governed engagements and findings, tenant isolation, tamper-evident history, encrypted persistence and recovery, replicas and drills, fenced multi-process writes, lifecycle-managed credentials, fleet-wide security controls, signed alert delivery, key rotation, OIDC federation, and governed SCIM identity lifecycle. Pass 13 adds time-boxed privileged access and controlled break glass. Pass 14 adds encrypted audit evidence, immutable versions, registered finding references, chain-of-custody integrity, legal holds, and governed disposition.
+Passes 1–12 established the audit universe, governed engagements and findings, tenant isolation, tamper-evident history, encrypted persistence and recovery, replicas and drills, fenced multi-process writes, lifecycle-managed credentials, fleet-wide security controls, signed alert delivery, key rotation, OIDC federation, and governed SCIM identity lifecycle. Pass 13 added time-boxed privileged access and controlled break glass. Pass 14 added encrypted audit evidence, immutable versions, registered finding references, chain-of-custody integrity, legal holds, and governed disposition. Pass 15 added deterministic admission screening and encrypted quarantine. Pass 16 adds signed external antivirus, sandbox and DLP attestations with immutable hash binding and optional release gating.
 
 ## Requirements
 
@@ -10,6 +10,7 @@ Passes 1–12 established the audit universe, governed engagements and findings,
 - A shared durable filesystem with reliable atomic `mkdir` and `rename` when shared-file controls are enabled
 - An approved OIDC identity provider when bearer authentication is enabled
 - An approved SCIM provisioning client when governed identity lifecycle is enabled
+- An approved external scanner or scanner orchestrator when external attestations are enforced
 
 ## Local setup
 
@@ -76,9 +77,14 @@ WORKFORCE_AUDIT_EVIDENCE_REQUIRED=true
 WORKFORCE_AUDIT_EVIDENCE_DIR=/var/lib/basitclaw/workforce-audit-evidence
 WORKFORCE_AUDIT_EVIDENCE_KEYS='{"2026-q3":"<base64-32-byte-key>","2026-q2":"<previous-base64-32-byte-key>"}'
 WORKFORCE_AUDIT_EVIDENCE_PRIMARY_KEY_ID=2026-q3
+WORKFORCE_AUDIT_EVIDENCE_SCREENING_MODE=enforce
+WORKFORCE_AUDIT_EVIDENCE_SCREENING_REQUIRED=true
+WORKFORCE_AUDIT_EVIDENCE_ARCHIVE_POLICY=review
 ```
 
 Evidence content and metadata are AES-256-GCM encrypted. Every item has an immutable `EVD-...` identifier, immutable versions, SHA-256 verification, retention metadata, and a hash-linked custody history. When enabled, findings can reference only active registered evidence or governed fieldwork placeholders; arbitrary links and paths are rejected.
+
+The deterministic admission engine identifies executable signatures, EICAR, active content, MIME mismatches, private keys, selected credential formats, payment-card patterns and containers requiring deeper inspection. Suspicious versions remain encrypted but cannot be downloaded or referenced until a governed decision. See `docs/evidence-chain-of-custody.md` and `docs/evidence-screening.md`.
 
 Legal hold, release and disposition require the protected `backup:restore` permission, so the default JIT policy applies. Disposition is refused before retention expiry, during a legal hold, or while any finding references the item. The service commits a durable tombstone before purging bytes and reports `purgePending` if deletion must be repaired.
 
@@ -88,7 +94,33 @@ npm run evidence:check -- verify tenant-acme
 npm run evidence:check -- list tenant-acme 100
 ```
 
-See `docs/evidence-chain-of-custody.md`.
+## Signed external scanner attestations
+
+Use the production overlay in `config/evidence-screening.production.env.example`, or configure:
+
+```bash
+WORKFORCE_AUDIT_EXTERNAL_SCANNER_MODE=enforce
+WORKFORCE_AUDIT_EXTERNAL_SCANNER_REQUIRED_FOR_RELEASE=true
+WORKFORCE_AUDIT_EXTERNAL_SCANNER_MAX_AGE_MINUTES=1440
+WORKFORCE_AUDIT_EXTERNAL_SCANNER_PROVIDERS='{"managed-av":{"keys":{"2026-q3":"<base64-32-to-128-byte-hmac-secret>"}}}'
+```
+
+Approved scanner orchestrators submit HMAC-authenticated verdicts to:
+
+```text
+POST /api/workforce-audit/external-scanner/attestations
+```
+
+Each attestation is bound to the tenant, immutable evidence ID, version and SHA-256 digest. Records are encrypted and hash chained. A latest non-clean verdict blocks release in enforce mode; when release gating is required, a recent clean attestation must exist. A clean verdict never auto-releases evidence: exact confirmation and JIT-protected human approval still apply.
+
+Governance readers can inspect:
+
+```text
+GET /api/workforce-audit/external-scanner/status
+GET /api/workforce-audit/evidence/{evidenceId}/external-scans
+```
+
+BasitClaw intentionally does not send quarantined bytes to arbitrary external URLs. Use a controlled sidecar, private object-store event, one-way transfer or approved sandbox pipeline to scan the original immutable bytes. See `docs/external-scanner-attestations.md`.
 
 ## API credentials
 
@@ -162,11 +194,11 @@ Every mutation acquires a tenant lease and writes under a monotonically increasi
 
 ## Verification
 
-- `npm test` covers audit controls, credentials, OIDC/JWKS, SCIM lifecycle, JIT access, encrypted evidence custody, persistence, recovery, replicas, coordination, quotas, alerts, rotation and readiness.
+- `npm test` covers audit controls, credentials, OIDC/JWKS, SCIM lifecycle, JIT access, encrypted evidence custody, deterministic screening, signed external attestations, persistence, recovery, replicas, coordination, quotas, alerts, rotation and readiness.
 - `npm run lint` validates runtime syntax.
 - `npm run build` verifies required production boundaries and dashboard markers.
 - GitHub Actions runs all checks on pull requests and pushes to `main`.
 
 ## Deployment boundary
 
-Shared-file controls are unsuitable for eventually consistent object-store mounts. Production still requires managed secret custody, monitored mounts, approved retention, controlled egress, authoritative HR and access-approval systems, an identity provider that issues and revokes tokens, receivers that verify alert signatures, malware and DLP scanning for uploaded evidence, external WORM/object-lock storage where required, and regular recovery, custody and access-review exercises.
+Shared-file controls are unsuitable for eventually consistent object-store mounts. Production still requires managed secret custody, monitored mounts, approved retention, controlled evidence transfer to scanners, authoritative HR and access-approval systems, an identity provider that issues and revokes tokens, receivers that verify alert signatures, external WORM/object-lock storage where required, and regular recovery, custody, scanner-key and access-review exercises.
