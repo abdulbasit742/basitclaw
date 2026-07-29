@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { createSecurityAlertDispatcher } from '../src/security/securityAlertDispatcher.js';
@@ -56,6 +56,11 @@ test('alert delivery signs payload and records a durable receipt', async () => {
     observed.options.headers['x-basitclaw-timestamp'],
     observed.options.headers['x-basitclaw-signature']
   ), true);
+  assert.equal(dispatcher.verifySignature(
+    `${observed.options.body}tampered`,
+    observed.options.headers['x-basitclaw-timestamp'],
+    observed.options.headers['x-basitclaw-signature']
+  ), false);
   assert.equal(dispatcher.health().outbox.pending, 0);
   assert.equal((await readdir(resolve(root, 'delivered'))).length, 1);
 });
@@ -84,6 +89,15 @@ test('retryable failures respect Retry-After and then dead-letter', async () => 
   assert.equal(dispatcher.health().outbox.status, 'degraded');
 });
 
+test('two outbox instances claim a shared delivery only once', async () => {
+  const root = await directory();
+  const first = createSecurityAlertOutbox({ directory: root });
+  const second = createSecurityAlertOutbox({ directory: root });
+  first.enqueue(event);
+  assert.equal(first.claimDue().length, 1);
+  assert.equal(second.claimDue().length, 0);
+});
+
 test('expired in-flight claims recover into pending state', async () => {
   const root = await directory();
   let current = new Date('2026-07-29T00:00:00Z');
@@ -98,6 +112,23 @@ test('expired in-flight claims recover into pending state', async () => {
   current = new Date('2026-07-29T00:00:02Z');
   assert.equal(outbox.health().pending, 1);
   assert.equal(outbox.health().inflight, 0);
+});
+
+test('a committed destination removes an orphaned in-flight claim without resend', async () => {
+  const root = await directory();
+  const outbox = createSecurityAlertOutbox({ directory: root });
+  outbox.enqueue(event);
+  const [claim] = outbox.claimDue();
+  const filename = `${claim.deliveryId}.json`;
+  await writeFile(resolve(root, 'delivered', filename), JSON.stringify({
+    version: 1,
+    deliveryId: claim.deliveryId,
+    state: 'delivered'
+  }));
+  const health = outbox.health();
+  assert.equal(health.pending, 0);
+  assert.equal(health.inflight, 0);
+  assert.equal((await readdir(resolve(root, 'delivered'))).length, 1);
 });
 
 test('dead letters can be explicitly requeued', async () => {
