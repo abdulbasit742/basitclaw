@@ -5,7 +5,8 @@ export function createSecurityTelemetry({
   pepper = randomBytes(32).toString('base64'),
   maxEvents = 2000,
   ephemeralPepper = false,
-  archive = null
+  archive = null,
+  alertDispatcher = null
 } = {}) {
   const limit = normaliseInteger(maxEvents, 'maxEvents', 100, 100_000);
   const safePepper = String(pepper ?? '');
@@ -14,6 +15,8 @@ export function createSecurityTelemetry({
   let sequence = 0;
   let archiveFailures = 0;
   let lastArchiveError = null;
+  let alertEnqueueFailures = 0;
+  let lastAlertError = null;
 
   function record(input) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('Security event input must be an object.');
@@ -47,6 +50,15 @@ export function createSecurityTelemetry({
         lastArchiveError = error.message;
       }
     }
+    if (alertDispatcher?.enabled) {
+      try {
+        alertDispatcher.enqueue(event);
+        lastAlertError = null;
+      } catch (error) {
+        alertEnqueueFailures += 1;
+        lastAlertError = error.message;
+      }
+    }
     return structuredClone(event);
   }
 
@@ -64,7 +76,9 @@ export function createSecurityTelemetry({
     for (let index = 0; index < events.length; index += 1) {
       const event = events[index];
       const { hash, ...unsigned } = event;
-      if (hashValue(unsigned) !== hash) return { valid: false, retainedEvents: events.length, failedEventId: event.id, headHash: events.at(-1)?.hash ?? null };
+      if (hashValue(unsigned) !== hash) {
+        return { valid: false, retainedEvents: events.length, failedEventId: event.id, headHash: events.at(-1)?.hash ?? null };
+      }
       if (index > 0 && event.previousHash !== events[index - 1].hash) {
         return { valid: false, retainedEvents: events.length, failedEventId: event.id, headHash: events.at(-1)?.hash ?? null };
       }
@@ -82,9 +96,13 @@ export function createSecurityTelemetry({
     const archiveHealth = archive?.health?.() ?? {
       status: 'disabled', enabled: false, required: false, mode: 'disabled', durable: false, distributed: false
     };
+    const alertHealth = alertDispatcher?.health?.() ?? {
+      status: 'disabled', enabled: false, required: false, mode: 'disabled'
+    };
     const archiveFailure = archiveHealth.required && archiveHealth.status !== 'ready';
+    const alertFailure = alertHealth.required && alertHealth.status !== 'ready';
     return {
-      status: archiveFailure ? 'unavailable' : 'ready',
+      status: archiveFailure || alertFailure ? 'unavailable' : 'ready',
       mode: archiveHealth.enabled ? 'bounded-memory-plus-encrypted-archive' : 'bounded-memory-hash-chain',
       durable: Boolean(archiveHealth.enabled && archiveHealth.durable),
       distributed: Boolean(archiveHealth.enabled && archiveHealth.distributed),
@@ -99,6 +117,11 @@ export function createSecurityTelemetry({
         ...archiveHealth,
         failures: archiveFailures,
         lastError: lastArchiveError
+      },
+      alertDelivery: {
+        ...alertHealth,
+        enqueueFailures: alertEnqueueFailures,
+        lastEnqueueError: lastAlertError
       }
     };
   }
@@ -108,23 +131,31 @@ export function createSecurityTelemetry({
   }
 
   function listArchived(options) {
-    return archive?.list?.(options) ?? { events: [], anchorSequence: 0, headSequence: 0, nextSequence: options?.afterSequence ?? 0 };
+    return archive?.list?.(options) ?? {
+      events: [], anchorSequence: 0, headSequence: 0, nextSequence: options?.afterSequence ?? 0
+    };
   }
 
   function verifyArchive() {
-    return archive?.verify?.() ?? { valid: true, disabled: true, retainedEvents: 0, headSequence: 0, headHash: null };
+    return archive?.verify?.() ?? {
+      valid: true, disabled: true, retainedEvents: 0, headSequence: 0, headHash: null
+    };
   }
 
   return { record, list, verify, summary, fingerprint, listArchived, verifyArchive };
 }
 
-export function createSecurityTelemetryFromEnvironment(env = process.env, { archive = null } = {}) {
+export function createSecurityTelemetryFromEnvironment(
+  env = process.env,
+  { archive = null, alertDispatcher = null } = {}
+) {
   const configuredPepper = env.WORKFORCE_AUDIT_SECURITY_EVENT_PEPPER;
   return createSecurityTelemetry({
     pepper: configuredPepper ?? randomBytes(32).toString('base64'),
     ephemeralPepper: !configuredPepper,
     maxEvents: Number(env.WORKFORCE_AUDIT_SECURITY_EVENT_RETENTION ?? 2000),
-    archive
+    archive,
+    alertDispatcher
   });
 }
 
@@ -140,7 +171,9 @@ function normaliseSeverity(value = 'info') {
 
 function safeIdentifier(value, field) {
   const identifier = String(value ?? '').trim();
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,191}$/.test(identifier)) throw new TypeError(`${field} must be a safe security-event identifier.`);
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,191}$/.test(identifier)) {
+    throw new TypeError(`${field} must be a safe security-event identifier.`);
+  }
   return identifier;
 }
 
@@ -152,7 +185,9 @@ function nullableIdentifier(value) {
 
 function sanitise(value, depth = 0) {
   if (depth > 4) return '[depth-limited]';
-  if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) return typeof value === 'string' ? value.slice(0, 500) : value;
+  if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) {
+    return typeof value === 'string' ? value.slice(0, 500) : value;
+  }
   if (Array.isArray(value)) return value.slice(0, 50).map((item) => sanitise(item, depth + 1));
   if (typeof value === 'object') {
     const output = {};
@@ -167,12 +202,16 @@ function sanitise(value, depth = 0) {
 
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+  }
   return JSON.stringify(value);
 }
 
 function normaliseInteger(value, field, minimum, maximum) {
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new TypeError(`${field} must be an integer from ${minimum} to ${maximum}.`);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new TypeError(`${field} must be an integer from ${minimum} to ${maximum}.`);
+  }
   return parsed;
 }
