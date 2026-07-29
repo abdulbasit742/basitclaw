@@ -22,8 +22,9 @@ export function createSecurityArchiveKeyLifecycle({
   if (!String(directory ?? '').trim()) throw new TypeError('A security archive directory is required for key lifecycle inspection.');
   const keys = encryptionKeys ?? (encryptionKey ? { [keyId]: encryptionKey } : null);
   if (!keys) throw new TypeError('Security archive key lifecycle inspection requires a keyring.');
-  const primary = primaryKeyId ?? keyId ?? Object.keys(keys)[0];
+  const primary = primaryKeyId ?? Object.keys(keys)[0];
   const codec = createSecurityArchiveCodec({ keys, primaryKeyId: primary });
+  const singleKey = codec.keyIds.length === 1;
   const files = createSecurityArchiveFilesystem(directory);
   const lock = mutex ?? createFileMutex({
     directory: resolve(String(directory), 'locks'),
@@ -81,8 +82,8 @@ export function createSecurityArchiveKeyLifecycle({
     const retirementSafeKeyIds = codec.keyIds.filter((id) => id !== codec.primaryKeyId && references[id].total === 0);
     const retainedHistoricalKeyIds = codec.keyIds.filter((id) => id !== codec.primaryKeyId && references[id].total > 0);
     return {
-      status: missingKeyIds.size > 0 ? 'unavailable' : codec.legacySingleKey ? 'legacy-single-key' : 'ready',
-      mode: codec.legacySingleKey ? 'single-key' : 'keyring',
+      status: missingKeyIds.size > 0 ? 'unavailable' : singleKey ? 'legacy-single-key' : 'ready',
+      mode: singleKey ? 'single-key' : 'keyring',
       primaryKeyId: codec.primaryKeyId,
       configuredKeyIds: codec.keyIds,
       configuredKeyCount: codec.keyIds.length,
@@ -90,7 +91,7 @@ export function createSecurityArchiveKeyLifecycle({
       retainedHistoricalKeyIds,
       retirementSafeKeyIds,
       missingKeyIds: [...missingKeyIds],
-      rotationReady: !codec.legacySingleKey && missingKeyIds.size === 0,
+      rotationReady: !singleKey && missingKeyIds.size === 0,
       inspectedAt: now().toISOString()
     };
   }
@@ -101,7 +102,7 @@ export function createSecurityArchiveKeyLifecycle({
     } catch (error) {
       return {
         status: 'unavailable',
-        mode: codec.legacySingleKey ? 'single-key' : 'keyring',
+        mode: singleKey ? 'single-key' : 'keyring',
         primaryKeyId: codec.primaryKeyId,
         configuredKeyIds: codec.keyIds,
         configuredKeyCount: codec.keyIds.length,
@@ -162,14 +163,14 @@ function createStaticSigningLifecycle({ keys, primaryKeyId }) {
   const configuredKeyIds = Object.keys(keys).map((id) => safeIdentifier(id, 'keyId'));
   const primary = safeIdentifier(primaryKeyId, 'primaryKeyId');
   if (!configuredKeyIds.includes(primary)) throw new TypeError('Security alert primary signing key ID is not present in the keyring.');
-  const legacySingleKey = configuredKeyIds.length === 1;
+  const singleKey = configuredKeyIds.length === 1;
   const status = () => ({
-    status: legacySingleKey ? 'legacy-single-key' : 'ready',
-    mode: legacySingleKey ? 'single-key' : 'keyring',
+    status: singleKey ? 'legacy-single-key' : 'ready',
+    mode: singleKey ? 'single-key' : 'keyring',
     primaryKeyId: primary,
     configuredKeyIds,
     configuredKeyCount: configuredKeyIds.length,
-    rotationReady: !legacySingleKey,
+    rotationReady: !singleKey,
     receiverOverlapRequired: true
   });
   const canRetire = (value) => {
