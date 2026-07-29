@@ -3,6 +3,9 @@ import { access, readFile } from 'node:fs/promises';
 const requiredFiles = [
   'src/server.js',
   'src/security/accessControl.js',
+  'src/security/rateLimiter.js',
+  'src/security/securityTelemetry.js',
+  'scripts/generate-api-credential.js',
   'src/persistence/encryptedSnapshotStore.js',
   'src/persistence/backupManager.js',
   'src/resilience/replicaManager.js',
@@ -16,6 +19,8 @@ const requiredFiles = [
   'public/workforce-audit.html',
   'src/types/workforceAudit.d.ts',
   'src/types/coordination.d.ts',
+  'src/types/security.d.ts',
+  'docs/api-security.md',
   '.github/workflows/ci.yml'
 ];
 
@@ -56,13 +61,33 @@ for (const marker of ['WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES', 'runResilience
   if (!scheduler.includes(marker)) throw new Error(`Scheduler build verification failed: missing ${marker}.`);
 }
 
+const accessControl = await readFile(new URL('../src/security/accessControl.js', import.meta.url), 'utf8');
+for (const marker of ['scryptSync', 'CREDENTIAL_REVOKED', 'credentialHealth', 'rotationRequired']) {
+  if (!accessControl.includes(marker)) throw new Error(`Credential build verification failed: missing ${marker}.`);
+}
+
+const rateLimiter = await readFile(new URL('../src/security/rateLimiter.js', import.meta.url), 'utf8');
+for (const marker of ['RATE_LIMITED', 'authFailure', 'sensitive', 'WORKFORCE_AUDIT_TRUST_PROXY_HOPS']) {
+  if (!rateLimiter.includes(marker)) throw new Error(`Rate-limit build verification failed: missing ${marker}.`);
+}
+
+const telemetry = await readFile(new URL('../src/security/securityTelemetry.js', import.meta.url), 'utf8');
+for (const marker of ['bounded-memory-hash-chain', 'ipFingerprint', 'WORKFORCE_AUDIT_SECURITY_EVENT_PEPPER', 'previousHash']) {
+  if (!telemetry.includes(marker)) throw new Error(`Security telemetry build verification failed: missing ${marker}.`);
+}
+
+const generator = await readFile(new URL('../scripts/generate-api-credential.js', import.meta.url), 'utf8');
+for (const marker of ['generateApiCredential', 'presentedKey', 'secretHash', 'randomBytes']) {
+  if (!generator.includes(marker)) throw new Error(`Credential generator build verification failed: missing ${marker}.`);
+}
+
 const server = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
-for (const marker of ['/backups', 'backup:restore', 'resilience-status', 'coordination-status', 'CoordinationBusyError']) {
+for (const marker of ['/backups', 'backup:restore', 'coordination-status', 'security-status', 'security-events', 'RateLimitError', 'x-api-key-rotation-required']) {
   if (!server.includes(marker)) throw new Error(`Server build verification failed: missing ${marker}.`);
 }
 
 const page = await readFile(new URL('../public/workforce-audit.html', import.meta.url), 'utf8');
-for (const marker of ['Workforce Audit Assurance', 'Recovery points', 'Replica status', 'Write coordination', 'x-api-key']) {
+for (const marker of ['Workforce Audit Assurance', 'Write coordination', 'Credential health', 'API Security Events', 'x-api-key']) {
   if (!page.includes(marker)) throw new Error(`Dashboard build verification failed: missing ${marker}.`);
 }
 
