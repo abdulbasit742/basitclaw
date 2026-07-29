@@ -47,7 +47,7 @@ await requireMarkers('docs/evidence-screening.md', 'Screening runbook', [
   'quarantine',
   'RELEASE QUARANTINE',
   'REJECT EVIDENCE',
-  'false positive',
+  'false-positive',
   'external antivirus'
 ]);
 await requireMarkers('public/workforce-audit.html', 'Screening dashboard', [
