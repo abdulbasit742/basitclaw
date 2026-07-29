@@ -117,6 +117,9 @@ export function createSecurityArchiveKeyLifecycle({
     const requested = safeIdentifier(value, 'keyId');
     return lock.withLock('security-archive', () => {
       const snapshot = inspectLocked();
+      if (snapshot.status === 'unavailable') {
+        return { safe: false, keyId: requested, reason: 'lifecycle_unavailable', status: snapshot };
+      }
       if (!codec.hasKey(requested)) return { safe: false, keyId: requested, reason: 'key_not_configured', status: snapshot };
       if (requested === codec.primaryKeyId) return { safe: false, keyId: requested, reason: 'primary_key', status: snapshot };
       const usage = snapshot.references[requested];
@@ -155,7 +158,7 @@ export function createSecurityKeyLifecycleFromEnvironment(env = process.env) {
   return {
     status: () => ({ archive: archive.status(), alertSigning: alert.status() }),
     archiveCanRetire: (keyId) => archive.canRetire(keyId),
-    alertCanRetire: (keyId) => alert.canRetire(keyId)
+    alertCanRetire: (keyId, options) => alert.canRetire(keyId, options)
   };
 }
 
@@ -173,11 +176,14 @@ function createStaticSigningLifecycle({ keys, primaryKeyId }) {
     rotationReady: !singleKey,
     receiverOverlapRequired: true
   });
-  const canRetire = (value) => {
+  const canRetire = (value, { receiverConfirmed = false } = {}) => {
     const requested = safeIdentifier(value, 'keyId');
     if (!configuredKeyIds.includes(requested)) return { safe: false, keyId: requested, reason: 'key_not_configured', status: status() };
     if (requested === primary) return { safe: false, keyId: requested, reason: 'primary_key', status: status() };
-    return { safe: true, keyId: requested, reason: 'receiver_overlap_must_be_confirmed', status: status() };
+    if (!receiverConfirmed) {
+      return { safe: false, keyId: requested, reason: 'receiver_overlap_confirmation_required', status: status() };
+    }
+    return { safe: true, keyId: requested, reason: 'receiver_overlap_confirmed', status: status() };
   };
   return { status, canRetire };
 }
