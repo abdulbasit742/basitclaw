@@ -48,9 +48,10 @@ export function createSecurityAlertOutbox({
       recoverStaleLocked();
       const deliveryId = deliveryIdFor(event);
       const filename = `${deliveryId}.json`;
-      for (const directoryPath of [pendingDir, inflightDir, deliveredDir, deadDir]) {
-        const existing = resolve(directoryPath, filename);
-        if (existsSync(existing)) return { enqueued: false, duplicate: true, deliveryId, state: stateName(directoryPath) };
+      for (const directoryPath of [deliveredDir, deadDir, inflightDir, pendingDir]) {
+        if (existsSync(resolve(directoryPath, filename))) {
+          return { enqueued: false, duplicate: true, deliveryId, state: stateName(directoryPath) };
+        }
       }
       const current = now().toISOString();
       const item = {
@@ -93,8 +94,7 @@ export function createSecurityAlertOutbox({
           claimExpiresAt: new Date(now().getTime() + safeInflightLeaseMs).toISOString()
         };
         writeJsonAtomic(source, inflight);
-        const target = resolve(inflightDir, filename);
-        renameSync(source, target);
+        renameSync(source, resolve(inflightDir, filename));
         syncDirectory(pendingDir);
         syncDirectory(inflightDir);
         claimed.push(structuredClone(inflight));
@@ -105,7 +105,8 @@ export function createSecurityAlertOutbox({
 
   function complete(deliveryId, claimToken, result = {}) {
     return lock.withLock('security-alert-outbox', () => {
-      const source = resolve(inflightDir, `${safeDeliveryId(deliveryId)}.json`);
+      const safeId = safeDeliveryId(deliveryId);
+      const source = resolve(inflightDir, `${safeId}.json`);
       const item = readClaim(source, claimToken);
       const completedAt = now().toISOString();
       const receipt = {
@@ -120,10 +121,7 @@ export function createSecurityAlertOutbox({
         eventId: item.event?.id ?? null,
         eventHash: item.event?.hash ?? null
       };
-      writeJsonAtomic(source, receipt);
-      renameSync(source, resolve(deliveredDir, `${item.deliveryId}.json`));
-      syncDirectory(inflightDir);
-      syncDirectory(deliveredDir);
+      commitDestination(source, resolve(deliveredDir, `${safeId}.json`), receipt, deliveredDir);
       pruneDirectory(deliveredDir, safeDeliveredRetention);
       return structuredClone(receipt);
     });
@@ -131,7 +129,8 @@ export function createSecurityAlertOutbox({
 
   function retry(deliveryId, claimToken, { nextAttemptAt, status = null, error = null } = {}) {
     return lock.withLock('security-alert-outbox', () => {
-      const source = resolve(inflightDir, `${safeDeliveryId(deliveryId)}.json`);
+      const safeId = safeDeliveryId(deliveryId);
+      const source = resolve(inflightDir, `${safeId}.json`);
       const item = readClaim(source, claimToken);
       const attemptAt = now().toISOString();
       const updated = {
@@ -139,7 +138,7 @@ export function createSecurityAlertOutbox({
         state: 'pending',
         updatedAt: attemptAt,
         attempts: item.attempts + 1,
-        nextAttemptAt: new Date(nextAttemptAt).toISOString(),
+        nextAttemptAt: validDate(nextAttemptAt, 'nextAttemptAt').toISOString(),
         lastAttemptAt: attemptAt,
         lastStatus: status,
         lastError: safeError(error)
@@ -147,17 +146,15 @@ export function createSecurityAlertOutbox({
       delete updated.claimedAt;
       delete updated.claimToken;
       delete updated.claimExpiresAt;
-      writeJsonAtomic(source, updated);
-      renameSync(source, resolve(pendingDir, `${item.deliveryId}.json`));
-      syncDirectory(inflightDir);
-      syncDirectory(pendingDir);
+      commitDestination(source, resolve(pendingDir, `${safeId}.json`), updated, pendingDir);
       return structuredClone(updated);
     });
   }
 
   function deadLetter(deliveryId, claimToken, { status = null, error = null, reason = 'delivery_failed' } = {}) {
     return lock.withLock('security-alert-outbox', () => {
-      const source = resolve(inflightDir, `${safeDeliveryId(deliveryId)}.json`);
+      const safeId = safeDeliveryId(deliveryId);
+      const source = resolve(inflightDir, `${safeId}.json`);
       const item = readClaim(source, claimToken);
       const attemptAt = now().toISOString();
       const dead = {
@@ -174,10 +171,7 @@ export function createSecurityAlertOutbox({
       delete dead.claimedAt;
       delete dead.claimToken;
       delete dead.claimExpiresAt;
-      writeJsonAtomic(source, dead);
-      renameSync(source, resolve(deadDir, `${item.deliveryId}.json`));
-      syncDirectory(inflightDir);
-      syncDirectory(deadDir);
+      commitDestination(source, resolve(deadDir, `${safeId}.json`), dead, deadDir);
       pruneDirectory(deadDir, safeDeadRetention);
       return structuredClone(dead);
     });
@@ -196,6 +190,7 @@ export function createSecurityAlertOutbox({
       const safeId = safeDeliveryId(deliveryId);
       const source = resolve(deadDir, `${safeId}.json`);
       const item = readJson(source);
+      if (item.state !== 'dead-letter') throw new Error('Security alert dead-letter state is invalid.');
       const current = now().toISOString();
       const pending = {
         ...item,
@@ -206,10 +201,7 @@ export function createSecurityAlertOutbox({
       };
       delete pending.deadLetteredAt;
       delete pending.deadLetterReason;
-      writeJsonAtomic(source, pending);
-      renameSync(source, resolve(pendingDir, `${safeId}.json`));
-      syncDirectory(deadDir);
-      syncDirectory(pendingDir);
+      commitDestination(source, resolve(pendingDir, `${safeId}.json`), pending, pendingDir);
       return structuredClone(pending);
     });
   }
@@ -250,21 +242,31 @@ export function createSecurityAlertOutbox({
     const currentMs = now().getTime();
     for (const filename of jsonNames(inflightDir)) {
       const source = resolve(inflightDir, filename);
+      const finalPaths = [
+        resolve(deliveredDir, filename),
+        resolve(deadDir, filename),
+        resolve(pendingDir, filename)
+      ];
+      if (finalPaths.some((path) => existsSync(path))) {
+        rmSync(source, { force: true });
+        continue;
+      }
       let item;
       try { item = readJson(source); } catch { continue; }
+      if (item.state !== 'inflight') throw new Error('Security alert in-flight state is invalid.');
       if (new Date(item.claimExpiresAt ?? 0).getTime() > currentMs) continue;
+      const current = now().toISOString();
       const recovered = {
         ...item,
         state: 'pending',
-        updatedAt: now().toISOString(),
-        nextAttemptAt: now().toISOString(),
+        updatedAt: current,
+        nextAttemptAt: current,
         lastError: 'Recovered after an expired in-flight claim.'
       };
       delete recovered.claimedAt;
       delete recovered.claimToken;
       delete recovered.claimExpiresAt;
-      writeJsonAtomic(source, recovered);
-      renameSync(source, resolve(pendingDir, filename));
+      commitDestination(source, resolve(pendingDir, filename), recovered, pendingDir);
     }
     syncDirectory(inflightDir);
     syncDirectory(pendingDir);
@@ -296,8 +298,17 @@ function safeDeliveryId(value) {
 
 function readClaim(path, token) {
   const item = readJson(path);
-  if (item.state !== 'inflight' || item.claimToken !== token) throw new Error('Security alert delivery claim is no longer owned.');
+  if (item.state !== 'inflight' || item.claimToken !== token) {
+    throw new Error('Security alert delivery claim is no longer owned.');
+  }
   return item;
+}
+
+function commitDestination(source, target, value, targetDirectory) {
+  writeJsonAtomic(target, value);
+  rmSync(source, { force: true });
+  syncDirectory(dirname(source));
+  syncDirectory(targetDirectory);
 }
 
 function safeResponseId(value) {
@@ -308,6 +319,12 @@ function safeResponseId(value) {
 function safeError(value) {
   if (value === undefined || value === null) return null;
   return String(value).slice(0, 500);
+}
+
+function validDate(value, field) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new TypeError(`${field} must be a valid date.`);
+  return date;
 }
 
 function stateName(directoryPath) {
@@ -349,7 +366,9 @@ function syncDirectory(directory) {
 
 function pruneDirectory(directory, retain) {
   const names = jsonNames(directory);
-  for (const name of names.slice(0, Math.max(0, names.length - retain))) rmSync(resolve(directory, name), { force: true });
+  for (const name of names.slice(0, Math.max(0, names.length - retain))) {
+    rmSync(resolve(directory, name), { force: true });
+  }
   syncDirectory(directory);
 }
 
