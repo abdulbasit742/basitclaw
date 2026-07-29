@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { prepareIdentityLifecycle } from '../src/runtime.js';
 
-test('identity lifecycle startup accepts disabled or fully ready controls', () => {
+test('identity lifecycle startup accepts disabled, ready, or review-attention controls', () => {
   const disabled = prepareIdentityLifecycle({ app: {}, env: {} });
   assert.equal(disabled.entitlementHealth.status, 'disabled');
 
@@ -14,6 +14,12 @@ test('identity lifecycle startup accepts disabled or fully ready controls', () =
     env: { WORKFORCE_AUDIT_SCIM_ENABLED: 'true' }
   });
   assert.equal(ready.scimHealth.credentials.status, 'ready');
+
+  const attention = prepareIdentityLifecycle({
+    app: { identityEntitlements: { health: () => ({ status: 'attention', enabled: true, required: true, mode: 'enforce', overdue: 1 }) } },
+    env: {}
+  });
+  assert.equal(attention.entitlementHealth.status, 'attention');
 });
 
 test('required entitlement storage fails startup closed', () => {
