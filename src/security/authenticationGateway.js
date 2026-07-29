@@ -13,6 +13,8 @@ import {
   createIdentityEntitlementRegistryFromEnvironment
 } from './identityEntitlementRegistry.js';
 import {
+  PrivilegedAccessError,
+  PrivilegedAccessStoreError,
   createDisabledPrivilegedAccessRegistry,
   createPrivilegedAccessRegistryFromEnvironment
 } from './privilegedAccessRegistry.js';
@@ -84,7 +86,25 @@ export function createAuthenticationGateway({
         permission
       });
     }
-    return privilegedAccess.authorise(principal, permission);
+    try {
+      return privilegedAccess.authorise(principal, permission);
+    } catch (error) {
+      if (error instanceof PrivilegedAccessStoreError) {
+        const unavailable = new Error(error.message);
+        unavailable.code = 'PERSISTENCE_UNAVAILABLE';
+        unavailable.details = { ...error.details, control: 'privileged_access' };
+        throw unavailable;
+      }
+      if (error instanceof PrivilegedAccessError) {
+        throw new AuthorizationError(error.message, {
+          reason: error.code,
+          keyId: principal?.keyId ?? null,
+          permission,
+          privilegedAccess: error.details
+        });
+      }
+      throw error;
+    }
   }
 
   function tenantIds() {
