@@ -4,11 +4,16 @@ import { fileURLToPath } from 'node:url';
 import { createRuntimeWorkforceAuditRegistry } from './coordination/coordinatedRegistry.js';
 import { createApp } from './server.js';
 import { AuthenticationError, AuthorizationError } from './security/accessControl.js';
+import { createAuthenticationGatewayFromEnvironment } from './security/authenticationGateway.js';
 import {
-  createAuthenticationGatewayFromEnvironment
-} from './security/authenticationGateway.js';
+  IdentityEntitlementError,
+  IdentityEntitlementStoreError,
+  createIdentityEntitlementRegistryFromEnvironment
+} from './security/identityEntitlementRegistry.js';
 import { OidcUnavailableError } from './security/oidcAuthenticator.js';
 import { createAdaptiveRateLimiterFromEnvironment } from './security/rateLimiter.js';
+import { createScimAccessControllerFromEnvironment } from './security/scimAccessController.js';
+import { createScimHandler } from './security/scimHandler.js';
 import { RateLimitStoreError } from './security/sharedRateLimiter.js';
 import { createSecurityEventArchiveFromEnvironment } from './security/securityEventArchive.js';
 import { createSecurityTelemetryFromEnvironment } from './security/securityTelemetry.js';
@@ -16,10 +21,23 @@ import { createSecurityTelemetryFromEnvironment } from './security/securityTelem
 export function createFederatedApp({
   env = process.env,
   registry = createRuntimeWorkforceAuditRegistry(),
-  authenticationGateway = createAuthenticationGatewayFromEnvironment(env),
+  identityEntitlements = createIdentityEntitlementRegistryFromEnvironment(env),
+  authenticationGateway = createAuthenticationGatewayFromEnvironment(env, { entitlementRegistry: identityEntitlements }),
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
   securityArchive = createSecurityEventArchiveFromEnvironment(env),
   securityTelemetry = createSecurityTelemetryFromEnvironment(env, { archive: securityArchive }),
+  scimAccessController = String(env.WORKFORCE_AUDIT_SCIM_ENABLED ?? 'false') === 'true'
+    ? createScimAccessControllerFromEnvironment(env)
+    : null,
+  scimHandler = scimAccessController
+    ? createScimHandler({
+      registry: identityEntitlements,
+      accessController: scimAccessController,
+      issuer: env.WORKFORCE_AUDIT_OIDC_ISSUER,
+      rateLimiter,
+      securityTelemetry
+    })
+    : null,
   resilienceScheduler = null,
   innerAppFactory = createApp
 } = {}) {
@@ -38,6 +56,13 @@ export function createFederatedApp({
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
+    if (url.pathname.startsWith('/scim/v2/')) {
+      if (scimHandler) return scimHandler.handle(req, res);
+      return sendJson(res, 404, {
+        schemas: ['urn:ietf:params:scim:api:messages:2.0:Error'],
+        status: '404', detail: 'SCIM provisioning is disabled.'
+      }, randomUUID(), {}, 'application/scim+json; charset=utf-8');
+    }
     if (!url.pathname.startsWith('/api/workforce-audit/')) return innerHandler(req, res);
     const authorization = headerValue(req.headers.authorization);
     const requiresPreAuthentication = Boolean(authorization) || authenticationGateway.mode === 'oidc';
@@ -50,6 +75,28 @@ export function createFederatedApp({
       authenticatedRequests.set(req, principal);
       return innerHandler(req, res);
     } catch (error) {
+      if (error instanceof IdentityEntitlementError) {
+        safeRecordSecurityEvent(securityTelemetry, {
+          type: 'identity.entitlement_denied',
+          severity: ['IDENTITY_SUSPENDED', 'IDENTITY_ENTITLEMENT_MISMATCH'].includes(error.code) ? 'high' : 'warning',
+          outcome: 'denied', requestId, clientAddress, subject: error.details?.subject,
+          tenantId: error.details?.tenantId, method: req.method, route: url.pathname,
+          details: { reason: error.code }
+        });
+        return sendJson(res, 403, {
+          success: false, error: error.message, code: error.code, meta: { requestId }
+        }, requestId);
+      }
+      if (error instanceof IdentityEntitlementStoreError) {
+        safeRecordSecurityEvent(securityTelemetry, {
+          type: 'identity_lifecycle.unavailable', severity: 'critical', outcome: 'failed', requestId,
+          clientAddress, method: req.method, route: url.pathname,
+          details: { reason: error.code }
+        });
+        return sendJson(res, 503, {
+          success: false, error: error.message, code: error.code, meta: { requestId }
+        }, requestId, { 'retry-after': '30' });
+      }
       if (error instanceof AuthenticationError) {
         let failedDecision;
         try {
@@ -69,12 +116,8 @@ export function createFederatedApp({
         safeRecordSecurityEvent(securityTelemetry, {
           type: 'authentication.failed',
           severity: error.code === 'UNAUTHENTICATED' ? 'warning' : 'high',
-          outcome: 'denied',
-          requestId,
-          clientAddress,
-          keyId: error.details?.keyId,
-          method: req.method,
-          route: url.pathname,
+          outcome: 'denied', requestId, clientAddress, keyId: error.details?.keyId,
+          method: req.method, route: url.pathname,
           details: { reason: error.details?.reason ?? error.code, authMethod: 'oidc' }
         });
         if (!failedDecision.allowed) {
@@ -94,12 +137,8 @@ export function createFederatedApp({
         safeRecordSecurityEvent(securityTelemetry, {
           type: error.details?.reason === 'tenant_override' ? 'tenant.override_attempted' : 'authorization.denied',
           severity: error.details?.reason === 'tenant_override' ? 'high' : 'warning',
-          outcome: 'denied',
-          requestId,
-          clientAddress,
-          keyId: error.details?.keyId,
-          method: req.method,
-          route: url.pathname,
+          outcome: 'denied', requestId, clientAddress, keyId: error.details?.keyId,
+          method: req.method, route: url.pathname,
           details: { reason: error.details?.reason, authMethod: 'oidc' }
         });
         return sendJson(res, 403, { success: false, error: error.message, code: error.code, meta: { requestId } }, requestId);
@@ -129,8 +168,10 @@ export function createFederatedApp({
   server.once('listening', () => inner.resilienceScheduler?.start?.());
   server.once('close', () => inner.resilienceScheduler?.stop?.());
   server.resilienceScheduler = inner.resilienceScheduler;
-  server.apiSecurity = { ...inner.apiSecurity, authenticationGateway };
+  server.apiSecurity = { ...inner.apiSecurity, authenticationGateway, identityEntitlements, scim: scimHandler?.health?.() ?? { status: 'disabled' } };
   server.authenticationGateway = authenticationGateway;
+  server.identityEntitlements = identityEntitlements;
+  server.scimHandler = scimHandler;
   return server;
 }
 
@@ -169,9 +210,9 @@ function safeRecordSecurityEvent(telemetry, input) {
   try { telemetry.record(input); } catch (error) { console.error('Security telemetry record failed', error); }
 }
 
-function sendJson(res, status, payload, requestId, additionalHeaders = {}) {
+function sendJson(res, status, payload, requestId, additionalHeaders = {}, contentType = 'application/json; charset=utf-8') {
   res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
+    'content-type': contentType,
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
     'x-request-id': requestId,

@@ -30,27 +30,15 @@ Production requires an explicit tenant allowlist unless `WORKFORCE_AUDIT_OIDC_AL
 
 ## Token validation
 
-The verifier enforces:
+The verifier enforces HTTPS endpoints, exact issuer and audience matching, RS256 or ES256, required `kid`, `sub`, `iat`, and `exp`, bounded lifetime and clock skew, minimum RSA/P-256 strength, controlled JWKS retrieval, forced unknown-key refresh, and bounded stale-key use. Unsigned, symmetric, weak-key, malformed, oversized, and header-supplied-key tokens fail closed.
 
-- HTTPS issuer and JWKS endpoints;
-- exact issuer and audience matching;
-- RS256 or ES256 only;
-- no unsigned, HMAC-signed, or header-supplied-key JWTs;
-- required `kid`, `sub`, `iat`, and `exp` claims;
-- optional `nbf` enforcement;
-- maximum token lifetime and bounded clock skew;
-- RSA keys of at least 2048 bits or P-256 EC keys;
-- JWKS response size, cache, timeout, redirect, and private-target controls;
-- forced JWKS refresh when an unknown signing key appears;
-- bounded stale-key use only inside the configured grace period.
+The service never trusts roles or permissions supplied directly by the token. Exact identity-provider groups map to one BasitClaw role. Missing or ambiguous role mappings are denied.
 
-The service never trusts roles or permissions supplied directly by the token. Exact identity-provider groups are mapped to one BasitClaw role. No mapped role is denied. Multiple distinct mapped roles are treated as ambiguous and denied.
+## Tenant, identity, and entitlement mapping
 
-## Tenant and identity mapping
+The tenant claim is mandatory and checked against the allowlist. `x-tenant-id` cannot override it. Raw external subjects are not placed into governance records; BasitClaw derives an issuer-bound pseudonymous subject and a stable rate-limit identity.
 
-The tenant claim is mandatory and is compared with the configured allowlist. `x-tenant-id` cannot override the authenticated tenant.
-
-Raw external subjects are not placed into governance records. BasitClaw derives a stable issuer-bound pseudonymous subject. The credential identity used for rate limits remains stable when the identity provider rotates signing keys; the signing key ID is retained separately for diagnostics.
+When governed provisioning is enabled, successful JWT validation is followed by an encrypted entitlement check. The pseudonymous subject must be provisioned, active, approved for the same tenant and role, and within its review period. See `docs/identity-provisioning.md`.
 
 Nested claim paths are supported, for example:
 
@@ -72,7 +60,7 @@ WORKFORCE_AUDIT_OIDC_REQUIRED_AMR=mfa
 
 Every configured AMR value must be present. Use identity-provider conditional-access policy as the primary control; these checks provide resource-server enforcement.
 
-## JWKS lifecycle and readiness
+## JWKS and lifecycle readiness
 
 Run the preflight before deployment:
 
@@ -80,33 +68,38 @@ Run the preflight before deployment:
 npm run identity:check
 ```
 
-OIDC-only production defaults to failing startup when JWKS warm-up fails. Hybrid mode may continue for API-key migration, but readiness becomes unavailable until OIDC recovers. Runtime refresh is controlled by `WORKFORCE_AUDIT_OIDC_REFRESH_SECONDS`.
+OIDC-only production defaults to failing startup when JWKS warm-up fails. Hybrid mode may continue for API-key migration, but readiness becomes unavailable until OIDC recovers. Known keys may be used during a temporary outage only until the configured stale boundary.
 
-Known cached keys may be used during a temporary provider outage only until `WORKFORCE_AUDIT_OIDC_JWKS_STALE_SECONDS` expires. After that boundary, token verification fails unavailable rather than trusting indefinitely stale keys.
+When entitlement enforcement or SCIM is enabled, the same preflight also validates encrypted entitlement storage and SCIM credential readiness. Required lifecycle storage fails startup closed.
 
 ## Migration procedure
 
 1. Configure OIDC issuer, audience, JWKS, tenant allowlist, and group mappings.
-2. Run `npm run identity:check` and verify mapped groups in a non-production environment.
-3. Set `WORKFORCE_AUDIT_AUTH_MODE=hybrid`.
-4. Migrate clients to short-lived bearer tokens.
-5. Monitor failed-authentication telemetry, unknown groups, tenant denials, JWKS cache state, and token-lifetime failures.
-6. Revoke or retire API credentials only after every approved client has migrated.
-7. Set `WORKFORCE_AUDIT_AUTH_MODE=oidc` and remove API-key configuration from the deployment.
+2. Configure entitlement lifecycle in `observe` outside production and measure unprovisioned identities.
+3. Configure SCIM and provision approved users with tenant, role, and review deadline.
+4. Run `npm run identity:check`.
+5. Set authentication to `hybrid` and entitlement lifecycle to `enforce` in the approved rollout.
+6. Migrate clients to bearer tokens and monitor OIDC and entitlement denials.
+7. Revoke API credentials only after every approved client has migrated.
+8. Set authentication to `oidc` and remove API-key configuration.
 
 ## Failure response
 
-- `OIDC_SIGNATURE_INVALID`: verify issuer signing keys and token audience; do not bypass signature validation.
-- `OIDC_SIGNING_KEY_UNKNOWN`: verify key rollover and JWKS freshness.
-- `OIDC_UNAVAILABLE`: identity-provider keys could not be refreshed and no acceptable cached key was available.
-- `OIDC_TENANT_NOT_ALLOWED`: correct the tenant assignment or allowlist through approved change control.
-- `OIDC_ROLE_NOT_MAPPED`: add an exact approved group mapping.
-- `OIDC_ROLE_AMBIGUOUS`: remove conflicting group membership or mappings.
-- `OIDC_ACR_REQUIRED` / `OIDC_AMR_REQUIRED`: satisfy the required identity-provider assurance policy.
+- `OIDC_SIGNATURE_INVALID`: verify issuer signing keys and audience; never bypass signature validation.
+- `OIDC_SIGNING_KEY_UNKNOWN`: verify rollover and JWKS freshness.
+- `OIDC_UNAVAILABLE`: no acceptable signing key was available.
+- `OIDC_TENANT_NOT_ALLOWED`: correct the tenant assignment or allowlist.
+- `OIDC_ROLE_NOT_MAPPED` / `OIDC_ROLE_AMBIGUOUS`: correct approved group mappings.
+- `OIDC_ACR_REQUIRED` / `OIDC_AMR_REQUIRED`: satisfy the required assurance policy.
+- `IDENTITY_NOT_PROVISIONED`: provision the identity through approved SCIM change control.
+- `IDENTITY_SUSPENDED`: review the deprovisioning source; do not reactivate outside approval.
+- `IDENTITY_ENTITLEMENT_MISMATCH`: reconcile token group/tenant claims with the approved entitlement.
+- `IDENTITY_REVIEW_OVERDUE`: complete and record the access review.
+- `IDENTITY_ENTITLEMENT_STORE_UNAVAILABLE`: restore encrypted store and historical key availability.
 - `AMBIGUOUS_CREDENTIALS`: send exactly one authentication method.
 
-Failed bearer authentication uses the existing failed-authentication rate policy and privacy-minimised security telemetry. Provider outages are recorded as critical security-control events.
+Failed bearer authentication and lifecycle denials use rate controls and privacy-minimised security telemetry.
 
 ## Remaining boundary
 
-Identity creation, group lifecycle, SCIM provisioning/deprovisioning, browser login, token issuance, refresh-token custody, token revocation/introspection, and identity-provider conditional access remain external enterprise identity responsibilities.
+BasitClaw now supports governed SCIM provisioning and local entitlement enforcement. Authoritative employment data, access approvals, browser login, token issuance, refresh-token custody, token revocation or introspection, and identity-provider conditional-access policy remain enterprise responsibilities.

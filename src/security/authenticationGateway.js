@@ -8,6 +8,10 @@ import {
   OidcAuthenticationError,
   createOidcAuthenticatorFromEnvironment
 } from './oidcAuthenticator.js';
+import {
+  createDisabledIdentityEntitlementRegistry,
+  createIdentityEntitlementRegistryFromEnvironment
+} from './identityEntitlementRegistry.js';
 
 const AUTH_MODES = new Set(['api-key', 'oidc', 'hybrid']);
 
@@ -15,13 +19,15 @@ export function createAuthenticationGateway({
   mode = 'api-key',
   apiKeyController = null,
   oidcAuthenticator = null,
-  oidcAllowedTenants = []
+  oidcAllowedTenants = [],
+  entitlementRegistry = null
 } = {}) {
   const authenticationMode = String(mode);
   if (!AUTH_MODES.has(authenticationMode)) throw new TypeError('Authentication mode must be api-key, oidc, or hybrid.');
   if (authenticationMode !== 'oidc' && !apiKeyController) throw new TypeError('API-key authentication is required by the configured authentication mode.');
   if (authenticationMode !== 'api-key' && !oidcAuthenticator) throw new TypeError('OIDC authentication is required by the configured authentication mode.');
   const knownOidcTenants = new Set(oidcAllowedTenants.map((value) => String(value).trim()).filter(Boolean));
+  const entitlements = entitlementRegistry ?? createDisabledIdentityEntitlementRegistry();
 
   async function authenticate(req) {
     const apiKey = headerValue(req.headers?.['x-api-key']);
@@ -43,10 +49,11 @@ export function createAuthenticationGateway({
         throw error;
       }
       enforceTenantHeader(req, principal);
+      const entitled = entitlements.enforce(principal);
       return Object.freeze({
-        ...principal,
-        keyId: stableFederatedKeyId(principal),
-        permissions: permissionsForRole(principal.role)
+        ...entitled,
+        keyId: stableFederatedKeyId(entitled),
+        permissions: permissionsForRole(entitled.role)
       });
     }
 
@@ -76,15 +83,18 @@ export function createAuthenticationGateway({
 
   function tenantIds() {
     const apiTenants = typeof apiKeyController?.tenantIds === 'function' ? apiKeyController.tenantIds() : [];
-    return [...new Set([...apiTenants, ...knownOidcTenants])];
+    const provisionedTenants = typeof entitlements.tenantIds === 'function' ? entitlements.tenantIds() : [];
+    return [...new Set([...apiTenants, ...knownOidcTenants, ...provisionedTenants])];
   }
 
   function credentialHealth() {
     const apiKeys = apiKeyController?.credentialHealth?.() ?? disabledApiKeyHealth();
     const oidc = oidcAuthenticator?.health?.() ?? disabledOidcHealth();
+    const identityEntitlements = entitlements.health?.() ?? { status: 'disabled', enabled: false, required: false, mode: 'disabled' };
     const enabledHealth = [
       ...(authenticationMode !== 'oidc' ? [apiKeys.status] : []),
-      ...(authenticationMode !== 'api-key' ? [oidc.status] : [])
+      ...(authenticationMode !== 'api-key' ? [oidc.status] : []),
+      ...(identityEntitlements.required ? [identityEntitlements.status] : [])
     ];
     const status = enabledHealth.every((value) => value === 'ready') ? 'ready' : 'unavailable';
     return {
@@ -92,7 +102,8 @@ export function createAuthenticationGateway({
       status,
       authenticationMode,
       apiKeys,
-      oidc
+      oidc,
+      identityEntitlements
     };
   }
 
@@ -104,7 +115,8 @@ export function createAuthenticationGateway({
     principalCount: apiKeyController?.principalCount ?? 0,
     mode: authenticationMode,
     apiKeyController,
-    oidcAuthenticator
+    oidcAuthenticator,
+    entitlementRegistry: entitlements
   };
 }
 
@@ -118,7 +130,8 @@ export function createAuthenticationGatewayFromEnvironment(env = process.env, op
   }));
   const oidcAllowedTenants = parseJsonOrCsv(env.WORKFORCE_AUDIT_OIDC_ALLOWED_TENANTS);
   const oidcAuthenticator = mode === 'api-key' ? null : (options.oidcAuthenticator ?? createOidcAuthenticatorFromEnvironment(env, options.oidcOptions));
-  return createAuthenticationGateway({ mode, apiKeyController, oidcAuthenticator, oidcAllowedTenants });
+  const entitlementRegistry = options.entitlementRegistry ?? createIdentityEntitlementRegistryFromEnvironment(env, options.entitlementOptions);
+  return createAuthenticationGateway({ mode, apiKeyController, oidcAuthenticator, oidcAllowedTenants, entitlementRegistry });
 }
 
 function loadApiPrincipals(env) {

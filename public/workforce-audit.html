@@ -35,7 +35,7 @@
 <body>
 <header>
   <h1>Workforce Audit Assurance</h1>
-  <p>Tenant-isolated audit readiness with enterprise bearer authentication, lifecycle-managed API credentials and evidence keys, encrypted persistence, governed recovery, fenced writes, distributed abuse controls, encrypted evidence, and signed security alert delivery.</p>
+  <p>Tenant-isolated audit readiness with enterprise bearer authentication, governed SCIM identity provisioning, lifecycle-managed credentials and evidence keys, encrypted persistence, governed recovery, fenced writes, distributed abuse controls, encrypted evidence, and signed security alert delivery.</p>
 </header>
 <main>
   <form id="auth" class="auth">
@@ -125,17 +125,24 @@
         canReadSecurity ? secureFetch('/api/workforce-audit/security-events?limit=50').catch(() => null) : Promise.resolve(null)
       ]);
       const rotationNotice = session.rotationRequired ? ' · rotation required' : '';
-      document.querySelector('#identity').textContent = `${session.subject} · ${session.role} · ${session.tenantId} · ${session.authMethod || 'api_key'}${rotationNotice}`;
+      const entitlementNotice = session.entitlementStatus ? ` · ${session.entitlementStatus}` : '';
+      document.querySelector('#identity').textContent = `${session.subject} · ${session.role} · ${session.tenantId} · ${session.authMethod || 'api_key'}${entitlementNotice}${rotationNotice}`;
       const alertDelivery = security?.telemetry?.alertDelivery;
       const archiveKeys = security?.telemetry?.keyLifecycle?.archive;
       const alertKeys = security?.telemetry?.keyLifecycle?.alertSigning;
       const oidc = security?.credentials?.oidc;
+      const entitlements = security?.credentials?.identityEntitlements;
       const cards = [
         ['Audit areas ready', `${overview.universe.ready}/${overview.universe.total}`],
         ['Active engagements', overview.engagements.active], ['High-risk findings', overview.findings.criticalOrHigh],
         ['Authentication mode', security?.credentials?.authenticationMode ?? session.authMethod ?? 'restricted'],
         ['Federated identity', oidc?.status ?? (session.authMethod === 'oidc' ? 'active' : 'disabled')],
         ['JWKS cache', oidc?.cacheState ?? 'restricted'],
+        ['Identity lifecycle', entitlements?.status ?? 'restricted'],
+        ['Review posture', entitlements?.reviewStatus ?? (entitlements?.overdue > 0 ? 'attention' : 'ready')],
+        ['Provisioned identities', entitlements?.total ?? 'restricted'],
+        ['Suspended identities', entitlements?.suspended ?? 'restricted'],
+        ['Reviews overdue', entitlements?.overdue ?? 'restricted'],
         ['Encrypted storage', persistence?.status ?? 'restricted'], ['Recovery points', backups ? backups.length : 'restricted'],
         ['Replica status', resilience?.replicaHealth?.status ?? 'restricted'], ['Recovery drill', resilience?.drill?.status ?? 'restricted'],
         ['Write coordination', coordination?.enabled ? coordination.status : 'disabled'],
