@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workforce Audit Assurance</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, system-ui, sans-serif; background: #f5f7fb; color: #182230; }
+    body { margin: 0; }
+    header { padding: 28px clamp(20px, 5vw, 72px); background: #102a43; color: white; }
+    header p { max-width: 760px; color: #d9e2ec; }
+    main { padding: 24px clamp(20px, 5vw, 72px) 60px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; }
+    .card, section { background: white; border: 1px solid #d9e2ec; border-radius: 14px; box-shadow: 0 8px 22px rgba(16,42,67,.06); }
+    .card { padding: 18px; }
+    .metric { font-size: 2rem; font-weight: 750; margin: 6px 0; }
+    section { margin-top: 22px; padding: 18px; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; min-width: 700px; }
+    th, td { padding: 12px; border-bottom: 1px solid #e6edf3; text-align: left; }
+    th { color: #486581; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+    .badge { display: inline-block; border-radius: 999px; padding: 4px 9px; background: #e6f6ef; color: #176b45; font-size: .8rem; }
+    .blocked, .attention { background: #fff1f0; color: #9b2c2c; }
+    .muted { color: #627d98; }
+    #error { color: #9b2c2c; margin-top: 16px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Workforce Audit Assurance</h1>
+  <p>Audit-universe readiness, engagement boundaries, fieldwork placeholder control, finding traceability, and external provider readiness in one review surface.</p>
+</header>
+<main>
+  <div id="metrics" class="grid" aria-live="polite"></div>
+  <div id="error" role="alert"></div>
+  <section>
+    <h2>HR Audit Universe</h2>
+    <table><thead><tr><th>Area</th><th>Risk</th><th>Owner</th><th>Readiness</th><th>Open findings</th></tr></thead><tbody id="universe"></tbody></table>
+  </section>
+  <section>
+    <h2>Engagement Planning Boundary</h2>
+    <table><thead><tr><th>Engagement</th><th>Universe item</th><th>Objective</th><th>Dates</th><th>Status</th></tr></thead><tbody id="engagements"></tbody></table>
+  </section>
+  <section>
+    <h2>Audit Provider Readiness</h2>
+    <table><thead><tr><th>Provider</th><th>Readiness</th><th>Security review</th><th>Capacity</th><th>Blockers</th></tr></thead><tbody id="providers"></tbody></table>
+  </section>
+</main>
+<script>
+  const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+  async function load() {
+    try {
+      const [overview, universe, engagements, providers] = await Promise.all([
+        fetch('/api/workforce-audit/overview').then(read),
+        fetch('/api/workforce-audit/universe').then(read),
+        fetch('/api/workforce-audit/engagements').then(read),
+        fetch('/api/workforce-audit/providers').then(read)
+      ]);
+      const cards = [
+        ['Audit areas ready', `${overview.universe.ready}/${overview.universe.total}`],
+        ['Active engagements', overview.engagements.active],
+        ['High-risk findings', overview.findings.criticalOrHigh],
+        ['Ready providers', `${overview.providers.ready}/${overview.providers.total}`]
+      ];
+      document.querySelector('#metrics').innerHTML = cards.map(([label, value]) => `<article class="card"><div class="muted">${escapeHtml(label)}</div><div class="metric">${escapeHtml(value)}</div></article>`).join('');
+      document.querySelector('#universe').innerHTML = universe.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.riskTier)}</td><td>${escapeHtml(item.owner)}</td><td><span class="badge ${item.readinessScore < 80 ? 'attention' : ''}">${escapeHtml(item.readinessScore)}%</span></td><td>${escapeHtml(item.openFindings)}</td></tr>`).join('');
+      document.querySelector('#engagements').innerHTML = engagements.map((item) => `<tr><td>${escapeHtml(item.id)}</td><td>${escapeHtml(item.universeItemId)}</td><td>${escapeHtml(item.objective)}</td><td>${escapeHtml(item.startDate)} – ${escapeHtml(item.endDate)}</td><td><span class="badge">${escapeHtml(item.status)}</span></td></tr>`).join('');
+      document.querySelector('#providers').innerHTML = providers.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td><span class="badge ${item.readiness === 'blocked' ? 'blocked' : ''}">${escapeHtml(item.readiness)}</span></td><td>${escapeHtml(item.securityReviewStatus)}</td><td>${escapeHtml(item.capacityStatus)}</td><td>${escapeHtml(item.blockers.join(', ') || 'None')}</td></tr>`).join('');
+    } catch (error) {
+      document.querySelector('#error').textContent = `Unable to load audit data: ${error.message}`;
+    }
+  }
+  async function read(response) {
+    const payload = await response.json();
+    if (!response.ok || !payload.success) throw new Error(payload.error || 'Request failed');
+    return payload.data;
+  }
+  load();
+</script>
+</body>
+</html>
