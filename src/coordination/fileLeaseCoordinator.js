@@ -9,6 +9,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync
 } from 'node:fs';
 import { hostname } from 'node:os';
@@ -67,7 +68,8 @@ export function createFileLeaseCoordinator({
     const timeoutMs = options.acquireTimeoutMs === undefined
       ? safeAcquireTimeoutMs
       : normaliseInteger(options.acquireTimeoutMs, 'acquireTimeoutMs', 0, 60_000);
-    const deadline = now().getTime() + timeoutMs;
+    const startedAt = now().getTime();
+    const deadline = startedAt + timeoutMs;
 
     mkdirSync(absoluteDirectory, { recursive: true, mode: 0o700 });
     const path = leaseDirectory(absoluteDirectory, tenantId);
@@ -75,22 +77,27 @@ export function createFileLeaseCoordinator({
     while (true) {
       try {
         mkdirSync(path, { mode: 0o700 });
-        const fencingToken = nextFencingToken(absoluteDirectory, tenantId);
-        const acquiredAt = now();
-        const record = {
-          format: 'basitclaw-workforce-audit-file-lease',
-          version: 1,
-          tenantHash: hashTenantIdentifier(tenantId),
-          ownerId: safeOwnerId,
-          pid: process.pid,
-          hostname: hostname(),
-          fencingToken,
-          acquiredAt: acquiredAt.toISOString(),
-          heartbeatAt: acquiredAt.toISOString(),
-          expiresAt: new Date(acquiredAt.getTime() + safeLeaseMs).toISOString()
-        };
-        atomicWrite(resolve(path, OWNER_FILE), `${JSON.stringify(record)}\n`);
-        return createLeaseHandle(tenantId, path, record);
+        try {
+          const fencingToken = nextFencingToken(absoluteDirectory, tenantId);
+          const acquiredAt = now();
+          const record = {
+            format: 'basitclaw-workforce-audit-file-lease',
+            version: 1,
+            tenantHash: hashTenantIdentifier(tenantId),
+            ownerId: safeOwnerId,
+            pid: process.pid,
+            hostname: hostname(),
+            fencingToken,
+            acquiredAt: acquiredAt.toISOString(),
+            heartbeatAt: acquiredAt.toISOString(),
+            expiresAt: new Date(acquiredAt.getTime() + safeLeaseMs).toISOString()
+          };
+          atomicWrite(resolve(path, OWNER_FILE), `${JSON.stringify(record)}\n`);
+          return createLeaseHandle(tenantId, path, record);
+        } catch (setupError) {
+          try { rmSync(path, { recursive: true, force: true }); } catch {}
+          throw setupError;
+        }
       } catch (error) {
         if (error?.code !== 'EEXIST') {
           throw new CoordinationUnavailableError('The tenant write lease could not be acquired.', {
@@ -100,7 +107,7 @@ export function createFileLeaseCoordinator({
         }
 
         const current = readOwner(path);
-        if (current && isExpired(current, now())) {
+        if ((current && isExpired(current, now())) || (!current && isOrphanedLease(path, now(), safeLeaseMs))) {
           tryTakeOverStaleLease(path, tenantId, current);
           continue;
         }
@@ -153,8 +160,9 @@ export function createFileLeaseCoordinator({
       let staleLeaseCount = 0;
       for (const entry of readdirSync(absoluteDirectory, { withFileTypes: true })) {
         if (!entry.isDirectory() || !entry.name.endsWith('.lease')) continue;
-        const owner = readOwner(resolve(absoluteDirectory, entry.name));
-        if (!owner || isExpired(owner, now())) staleLeaseCount += 1;
+        const path = resolve(absoluteDirectory, entry.name);
+        const owner = readOwner(path);
+        if (!owner ? isOrphanedLease(path, now(), safeLeaseMs) : isExpired(owner, now())) staleLeaseCount += 1;
         else activeLeaseCount += 1;
       }
       return {
@@ -349,6 +357,14 @@ function sameLease(record, identity) {
 function isExpired(record, currentTime) {
   const expiresAt = Date.parse(record?.expiresAt ?? '');
   return !Number.isFinite(expiresAt) || expiresAt <= currentTime.getTime();
+}
+
+function isOrphanedLease(path, currentTime, graceMs) {
+  try {
+    return currentTime.getTime() - statSync(path).mtimeMs >= graceMs;
+  } catch (error) {
+    return error?.code === 'ENOENT';
+  }
 }
 
 function leaseDirectory(directory, tenantId) {
