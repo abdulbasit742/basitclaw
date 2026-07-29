@@ -1,86 +1,47 @@
 # Workforce audit governance boundary
 
-This module separates audit planning readiness from audit conclusions and enforces identity, credential lifecycle, tenant isolation, API abuse protection, durability, traceability, backup, recovery, replication, drill, and multi-process coordination boundaries.
+This module separates audit planning readiness from audit conclusions and enforces identity, credential lifecycle, tenant isolation, fleet-wide API abuse protection, encrypted security evidence, durability, traceability, backup, recovery, replication, drills, and multi-process coordination.
 
 ## Permissions
 
-| Role | Backups | Replicas | Drills | Restore | Manual resilience cycle | Coordination status | Security status/events |
+| Role | Backups | Replicas | Drills | Restore | Manual resilience cycle | Coordination | Security controls/events |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | audit_viewer | No | No | No | No | No | No | No |
 | auditor | No | No | No | No | No | No | No |
-| audit_manager | Create/read/verify | Create/read/verify | Yes | No | No | Yes | No |
-| compliance_admin | Create/read/verify | Create/read/verify | Yes | Yes | Yes | Yes | Yes |
+| audit_manager | Create/read/verify | Create/read/verify | Yes | No | No | Read | No |
+| compliance_admin | Create/read/verify | Create/read/verify | Yes | Yes | Yes | Read | Read/export/verify |
 
 ## Credential protocol
 
-Production credentials are presented as `keyId.secret`, while configuration stores only `keyId`, a random salt, the base64 scrypt hash, subject, tenant, role, lifecycle status, and optional activation/expiry windows. Plaintext `apiKey` records are rejected when `NODE_ENV=production`.
+Production credentials are presented as `keyId.secret`; configuration stores only the key ID, random salt, base64 scrypt hash, subject, tenant, role, lifecycle status, and optional activation/expiry windows. Plaintext records are rejected in production. Retiring or soon-expiring credentials receive rotation headers, while revoked, expired, and premature credentials fail closed.
 
-- `active` credentials are accepted inside their configured time window.
-- `retiring` credentials remain usable but receive `x-api-key-rotation-required: true`.
-- credentials nearing expiry within the configured warning window also receive the rotation header;
-- `revoked`, expired, and not-yet-active credentials are rejected with explicit 401 codes;
-- the credential record, never a request header, determines tenant access.
-
-Generate a high-entropy credential with `npm run credential:generate -- <keyId> <subject> <tenantId> [role] [expiresAt]` and immediately place the presented key in a secret manager.
-
-## API abuse and telemetry protocol
+## API security protocol
 
 Every workforce-audit API request passes through:
 
-1. a per-client burst window;
-2. credential authentication and lifecycle validation;
-3. a dedicated failed-authentication pressure window;
-4. a credential-and-client policy for reads, writes, or sensitive recovery actions;
+1. a client burst quota;
+2. credential and lifecycle validation;
+3. a dedicated failed-authentication quota;
+4. a credential-and-client read, write, or sensitive-operation quota;
 5. role authorisation and tenant isolation.
 
-Exceeded limits return `429 RATE_LIMITED` with `Retry-After` and rate-limit headers. The built-in limiter is process-local and must be complemented by a shared ingress policy in multi-process deployments.
+Shared-file limiter mode stores only SHA-256 identity hashes, uses atomic per-bucket locks and fsynced replacements, recovers stale locks, and fails closed on corrupted buckets. Coordinated production deployments require distributed limiting by default.
 
-Security telemetry records authentication failures, tenant override attempts, permission denials, and throttling. It stores only keyed address fingerprints, strips key/secret/token/password fields, and maintains a bounded in-memory hash chain. It is operational evidence, not a durable SIEM archive.
+Security telemetry records authentication failures, tenant override attempts, permission denials, throttling, and shared-control failures. Raw addresses become keyed fingerprints, and key/secret/token/password/address fields are removed.
 
-## Durable mutation protocol
+When enabled, the durable archive encrypts each redacted event with AES-256-GCM and authenticates a global sequence and hash chain with a separately derived HMAC key. Cross-process append operations are serialised. Interrupted head updates are recovered from committed segment tails. Retention uses signed anchors and a signed prune journal so interrupted deletion either rolls forward or rolls back safely.
 
-In single-process mode, business mutations and governance events are committed together to the encrypted tenant snapshot. In coordinated mode, every mutation additionally:
+## Durable audit mutation protocol
 
-1. atomically acquires the tenant lease;
-2. receives the next durable fencing token;
-3. reloads the latest encrypted state and governance chain;
-4. applies and validates the requested mutation;
-5. writes a token-versioned encrypted package;
-6. verifies lease ownership before returning success;
-7. releases only the lease owned by the same instance and token.
+In coordinated mode every mutation atomically acquires the tenant lease, receives the next fencing token, reloads current state and governance history, applies validation, writes a token-versioned encrypted package, verifies ownership, and releases only its own lease. Readers select the highest token, preventing delayed superseded writers from replacing newer state.
 
-Readers always select the highest fencing token. A delayed writer using an older token cannot become the current tenant state even if it resumes after stale-lease takeover.
+## Backup, restore, replica, and drill controls
 
-## Backup protocol
-
-1. Ensure the latest tenant state and governance chain are durably committed.
-2. Copy the validated encrypted primary envelope into the tenant-hashed backup directory.
-3. Write a checksum manifest with key ID, encrypted size, kind, timestamp, and ordering metadata.
-4. Fsync and atomically rename both files.
-5. Enforce the configured per-tenant retention count.
-6. Append `backup.created` to the tenant governance chain and durably commit it.
-
-## Restore protocol
-
-A restore requires a 10–500 character reason, the current governance head, a dry-run, administrator permission, and the exact `RESTORE <backupId>` phrase for execution. The service rejects stale heads, verifies checksum, encryption, tenant binding, and governance integrity, and creates a safety backup before replacement. In coordinated mode the entire execution runs under one tenant lease and is re-encrypted under its current fencing token. A failed recovery restores the prior business state and governance chain together.
-
-## Replica protocol
-
-1. Load and verify the source encrypted recovery point.
-2. Write the unchanged encrypted snapshot envelope to a tenant-hashed replica directory.
-3. Write a manifest containing source time, replica time, key ID, checksum, encrypted size, kind, and ordering metadata.
-4. Fsync and atomically rename both files.
-5. Enforce per-tenant replica retention.
-6. Append `backup.replicated` to the tenant governance chain and durably commit it.
-7. Treat a repeated replication request as idempotent after checksum verification.
-
-Replica data is never decrypted for storage. Verification decrypts only through the existing tenant-bound AES-256-GCM inspection path.
-
-## Drill and scheduler protocol
-
-A drill compares the local recovery-point checksum and decrypted summary with the corresponding replica. A successful drill appends `recovery.drill.completed`; no primary state is replaced.
-
-The scheduler is disabled when `WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES=0`. When enabled it covers unique tenants represented by configured principals. In coordinated mode each tenant cycle acquires its own lease, so one busy or failed tenant does not stop the remaining cycle.
+- Backups copy a validated encrypted primary envelope, write checksum manifests atomically, enforce retention, and append governance evidence.
+- Restore requires a reason, current governance head, dry-run, administrator permission, exact confirmation, and a verified safety backup.
+- Replicas retain unchanged encrypted packages on a separately controlled target and verify tenant binding, checksum, encryption, and source comparison.
+- Drills compare local recovery points with replicas without replacing primary state.
+- Scheduled cycles isolate per-tenant failures and acquire tenant leases in coordinated mode.
 
 ## APIs
 
@@ -96,19 +57,20 @@ The scheduler is disabled when `WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES=0`. Whe
 - `GET /api/workforce-audit/coordination-status`
 - `GET /api/workforce-audit/security-status`
 - `GET /api/workforce-audit/security-events`
+- `GET /api/workforce-audit/security-archive-events`
+- `GET /api/workforce-audit/security-archive-integrity`
 
 ## Error model
 
-- `401 CREDENTIAL_REVOKED`, `CREDENTIAL_EXPIRED`, or `CREDENTIAL_NOT_ACTIVE`: the presented credential is outside its permitted lifecycle.
-- `404 BACKUP_NOT_FOUND` or `REPLICA_NOT_FOUND`: the requested package is absent.
-- `409 BACKUP_INTEGRITY_FAILED` or `REPLICA_INTEGRITY_FAILED`: checksum, size, tenant binding, encryption, or source comparison failed.
+- `401 CREDENTIAL_REVOKED`, `CREDENTIAL_EXPIRED`, or `CREDENTIAL_NOT_ACTIVE`: credential lifecycle rejection.
+- `409 BACKUP_INTEGRITY_FAILED`, `REPLICA_INTEGRITY_FAILED`, or `SECURITY_ARCHIVE_INTEGRITY_FAILED`: durable evidence is inconsistent.
 - `409 RECOVERY_CONFLICT`: the supplied governance head is stale or missing.
-- `423 WRITE_COORDINATION_BUSY`: another process owns the tenant lease; clients should respect `Retry-After`.
-- `429 RATE_LIMITED`: a burst, authentication, read, write, or sensitive-operation policy was exceeded.
-- `503 WRITE_COORDINATION_LOST` or `WRITE_COORDINATION_UNAVAILABLE`: lease ownership or shared coordination storage failed.
-- `503 PERSISTENCE_FENCE_REJECTED`: a superseded fencing token attempted a durable write.
-- `503 BACKUP_UNAVAILABLE`, `REPLICA_UNAVAILABLE`, or `PERSISTENCE_UNAVAILABLE`: another durable operation could not complete safely.
+- `423 WRITE_COORDINATION_BUSY`: another process owns the tenant write lease.
+- `429 RATE_LIMITED`: a configured API policy was exceeded.
+- `503 RATE_LIMIT_STORE_UNAVAILABLE`: the distributed quota store could not commit safely.
+- `503 SECURITY_ARCHIVE_UNAVAILABLE`: encrypted security evidence could not be committed or read safely.
+- `503 WRITE_COORDINATION_LOST`, `WRITE_COORDINATION_UNAVAILABLE`, `PERSISTENCE_FENCE_REJECTED`, `BACKUP_UNAVAILABLE`, `REPLICA_UNAVAILABLE`, or `PERSISTENCE_UNAVAILABLE`: another durable boundary failed closed.
 
 ## Deployment limitation
 
-File-lease coordination supports multiple processes only on shared durable filesystems with reliable atomic directory creation and rename. Do not use it on eventually consistent object-store mounts. The process-local rate limiter and event buffer require a shared ingress quota and central SIEM/alert pipeline for complete fleet-wide enforcement and retention. Production also needs managed key custody, mount monitoring, retention approval, and isolated recovery exercises.
+File-based coordination, shared quotas, and security archives require a shared durable filesystem with reliable atomic directory creation and rename. Do not use eventually consistent object-store mounts. Archive export enables cursor-based SIEM polling but not outbound alert delivery. Production also needs managed key custody, mount monitoring, approved retention, external alert routing, and isolated recovery exercises.
