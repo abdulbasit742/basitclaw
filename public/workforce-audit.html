@@ -35,7 +35,7 @@
 <body>
 <header>
   <h1>Workforce Audit Assurance</h1>
-  <p>Tenant-isolated audit readiness with encrypted persistence, governed recovery, fenced writes, lifecycle-managed credentials, distributed abuse controls, encrypted evidence, and signed security alert delivery.</p>
+  <p>Tenant-isolated audit readiness with encrypted persistence, governed recovery, fenced writes, lifecycle-managed credentials and evidence keys, distributed abuse controls, encrypted evidence, and signed security alert delivery.</p>
 </header>
 <main>
   <form id="auth" class="auth">
@@ -105,6 +105,8 @@
       const rotationNotice = session.rotationRequired ? ' · rotation required' : '';
       document.querySelector('#identity').textContent = `${session.subject} · ${session.role} · ${session.tenantId} · ${session.keyId}${rotationNotice}`;
       const alertDelivery = security?.telemetry?.alertDelivery;
+      const archiveKeys = security?.telemetry?.keyLifecycle?.archive;
+      const alertKeys = security?.telemetry?.keyLifecycle?.alertSigning;
       const cards = [
         ['Audit areas ready', `${overview.universe.ready}/${overview.universe.total}`],
         ['Active engagements', overview.engagements.active], ['High-risk findings', overview.findings.criticalOrHigh],
@@ -118,6 +120,9 @@
         ['Distributed rate limit', security?.rateLimiting?.distributed ? security.rateLimiting.status : 'local'],
         ['Security archive', security?.telemetry?.archive?.status ?? 'restricted'],
         ['Archive sequence', security?.telemetry?.archive?.headSequence ?? 'restricted'],
+        ['Archive key rotation', archiveKeys?.status ?? 'restricted'],
+        ['Historical archive keys', archiveKeys?.retainedHistoricalKeyCount ?? 'restricted'],
+        ['Alert signing rotation', alertKeys?.status ?? 'restricted'],
         ['Security alert delivery', alertDelivery?.status ?? 'restricted'],
         ['Alert outbox', alertDelivery?.outbox?.pending ?? 'restricted'],
         ['Alert dead letters', alertDelivery?.outbox?.deadLetters ?? 'restricted'],

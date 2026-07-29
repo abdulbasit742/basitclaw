@@ -2,9 +2,21 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 const SEVERITY_RANK = Object.freeze({ info: 0, warning: 1, high: 2, critical: 3 });
 
-export function createSecurityAlertCodec({ signingSecret, minimumSeverity = 'high', includedTypes = [] } = {}) {
-  const secret = Buffer.from(String(signingSecret ?? ''), 'utf8');
-  if (secret.length < 32) throw new TypeError('Security alert signing secret must contain at least 32 bytes.');
+export function createSecurityAlertCodec({
+  signingSecret,
+  signingSecrets = null,
+  primarySigningKeyId = null,
+  minimumSeverity = 'high',
+  includedTypes = []
+} = {}) {
+  const environmentSecrets = signingSecrets ? null : parseSigningKeyring(process.env.WORKFORCE_AUDIT_SECURITY_ALERT_SIGNING_SECRETS);
+  const effectiveSecrets = signingSecrets ?? environmentSecrets;
+  const effectivePrimary = primarySigningKeyId
+    ?? (effectiveSecrets ? process.env.WORKFORCE_AUDIT_SECURITY_ALERT_PRIMARY_SIGNING_KEY_ID : null)
+    ?? 'security-alert-v1';
+  const secrets = createSecrets({ signingSecret, signingSecrets: effectiveSecrets, primarySigningKeyId: effectivePrimary });
+  const primaryKeyId = safeIdentifier(effectivePrimary, 'primarySigningKeyId');
+  if (!secrets.has(primaryKeyId)) throw new TypeError('Security alert primary signing key ID is not present in the keyring.');
   const minimum = normaliseSeverity(minimumSeverity);
   const typeSet = new Set(normaliseTypes(includedTypes));
 
@@ -28,33 +40,51 @@ export function createSecurityAlertCodec({ signingSecret, minimumSeverity = 'hig
   function headers(body, deliveryId, timestamp = new Date()) {
     const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
     const timestampSeconds = String(Math.floor(timestamp.getTime() / 1000));
-    const signature = sign(`${timestampSeconds}.${bodyText}`);
+    const signature = sign(`${timestampSeconds}.${bodyText}`, primaryKeyId);
     return {
       'content-type': 'application/json; charset=utf-8',
       'user-agent': 'BasitClaw-Security-Alerts/1.0',
       'x-basitclaw-delivery-id': deliveryId,
       'x-basitclaw-timestamp': timestampSeconds,
+      'x-basitclaw-key-id': primaryKeyId,
       'x-basitclaw-signature': `sha256=${signature}`
     };
   }
 
-  function verify(body, timestampSeconds, signature) {
-    const expected = `sha256=${sign(`${timestampSeconds}.${body}`)}`;
-    return constantEqual(expected, signature);
+  function verify(body, timestampSeconds, signature, keyId = null) {
+    const candidates = keyId ? [safeIdentifier(keyId, 'keyId')] : [...secrets.keys()];
+    for (const candidate of candidates) {
+      const secret = secrets.get(candidate);
+      if (!secret) continue;
+      const expected = `sha256=${signWith(secret, `${timestampSeconds}.${body}`)}`;
+      if (constantEqual(expected, signature)) return true;
+    }
+    return false;
   }
 
-  function sign(value) {
-    return createHmac('sha256', secret).update(String(value)).digest('hex');
+  function sign(value, keyId = primaryKeyId) {
+    const safeKeyId = safeIdentifier(keyId, 'keyId');
+    const secret = secrets.get(safeKeyId);
+    if (!secret) throw new TypeError('Security alert signing key is not configured.');
+    return signWith(secret, value);
   }
 
   return {
     minimumSeverity: minimum,
     includedTypes: [...typeSet],
+    primaryKeyId,
+    keyIds: [...secrets.keys()],
+    legacySingleKey: !effectiveSecrets,
     shouldDeliver,
     payload,
     headers,
-    verify
+    verify,
+    sign
   };
+}
+
+export function parseSecurityAlertSigningKeyring(value) {
+  return parseSigningKeyring(value);
 }
 
 export function backoffDelayMs({ deliveryId, attempt, baseDelayMs, maxDelayMs }) {
@@ -90,6 +120,35 @@ export function validateWebhookEndpoint(value, { allowHttp = false, allowPrivate
   return url.toString();
 }
 
+function createSecrets({ signingSecret, signingSecrets, primarySigningKeyId }) {
+  const entries = signingSecrets ? Object.entries(signingSecrets) : [[primarySigningKeyId, signingSecret]];
+  if (entries.length === 0) throw new TypeError('Security alert signing keyring must contain at least one secret.');
+  const output = new Map();
+  for (const [keyId, value] of entries) {
+    const safeKeyId = safeIdentifier(keyId, 'keyId');
+    const secret = Buffer.from(String(value ?? ''), 'utf8');
+    if (secret.length < 32) throw new TypeError('Security alert signing secrets must contain at least 32 bytes.');
+    output.set(safeKeyId, secret);
+  }
+  return output;
+}
+
+function parseSigningKeyring(value) {
+  if (value === undefined || value === null || value === '') return null;
+  let parsed;
+  try { parsed = typeof value === 'string' ? JSON.parse(value) : value; } catch {
+    throw new TypeError('WORKFORCE_AUDIT_SECURITY_ALERT_SIGNING_SECRETS must be a JSON object.');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.keys(parsed).length === 0) {
+    throw new TypeError('Security alert signing keyring must be a non-empty object.');
+  }
+  return parsed;
+}
+
+function signWith(secret, value) {
+  return createHmac('sha256', secret).update(String(value)).digest('hex');
+}
+
 function normaliseSeverity(value) {
   const severity = String(value ?? '').toLowerCase();
   if (!(severity in SEVERITY_RANK)) throw new TypeError('Security alert severity is invalid.');
@@ -119,6 +178,12 @@ function constantEqual(left, right) {
   const a = Buffer.from(String(left ?? ''));
   const b = Buffer.from(String(right ?? ''));
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function safeIdentifier(value, field) {
+  const identifier = String(value ?? '').trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(identifier)) throw new TypeError(`${field} must be a safe identifier.`);
+  return identifier;
 }
 
 function integer(value, field, minimum, maximum) {

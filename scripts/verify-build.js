@@ -4,17 +4,18 @@ const requiredFiles = [
   'src/server.js', 'src/security/accessControl.js', 'src/security/rateLimiter.js',
   'src/security/sharedRateLimiter.js', 'src/security/fileMutex.js', 'src/security/securityTelemetry.js',
   'src/security/securityArchiveCodec.js', 'src/security/securityArchiveFilesystem.js',
-  'src/security/securityEventArchive.js', 'src/security/securityAlertCodec.js',
-  'src/security/securityAlertOutbox.js', 'src/security/securityAlertDispatcher.js',
-  'src/security/securityAlertRuntime.js', 'scripts/generate-api-credential.js',
-  'scripts/security-alerts.js', 'src/persistence/encryptedSnapshotStore.js',
-  'src/persistence/backupManager.js', 'src/resilience/replicaManager.js',
-  'src/resilience/resilienceScheduler.js', 'src/coordination/fileLeaseCoordinator.js',
-  'src/coordination/fencedSnapshotStore.js', 'src/coordination/coordinatedRegistry.js',
-  'src/services/workforceAuditService.js', 'src/services/workforceAuditRegistry.js',
-  'src/services/governanceLedger.js', 'public/workforce-audit.html',
-  'src/types/workforceAudit.d.ts', 'src/types/coordination.d.ts', 'src/types/security.d.ts',
-  'docs/api-security.md', 'docs/security-alert-delivery.md', '.github/workflows/ci.yml'
+  'src/security/securityEventArchive.js', 'src/security/securityKeyLifecycle.js',
+  'src/security/securityAlertCodec.js', 'src/security/securityAlertOutbox.js',
+  'src/security/securityAlertDispatcher.js', 'src/security/securityAlertRuntime.js',
+  'scripts/generate-api-credential.js', 'scripts/security-alerts.js', 'scripts/security-keys.js',
+  'src/persistence/encryptedSnapshotStore.js', 'src/persistence/backupManager.js',
+  'src/resilience/replicaManager.js', 'src/resilience/resilienceScheduler.js',
+  'src/coordination/fileLeaseCoordinator.js', 'src/coordination/fencedSnapshotStore.js',
+  'src/coordination/coordinatedRegistry.js', 'src/services/workforceAuditService.js',
+  'src/services/workforceAuditRegistry.js', 'src/services/governanceLedger.js',
+  'public/workforce-audit.html', 'src/types/workforceAudit.d.ts',
+  'src/types/coordination.d.ts', 'src/types/security.d.ts', 'docs/api-security.md',
+  'docs/security-alert-delivery.md', 'docs/security-key-rotation.md', '.github/workflows/ci.yml'
 ];
 
 for (const file of requiredFiles) await access(new URL(`../${file}`, import.meta.url));
@@ -38,17 +39,20 @@ await requireMarkers('src/security/rateLimiter.js', 'Rate limit', ['RATE_LIMITED
 await requireMarkers('src/security/sharedRateLimiter.js', 'Shared rate limit', ['shared-file-fixed-window', 'RATE_LIMIT_STORE_UNAVAILABLE', 'identityHash', 'atomicWriteJson']);
 await requireMarkers('src/security/fileMutex.js', 'Security mutex', ['SECURITY_CONTROL_BUSY', 'stale', 'owner.json', 'withLock']);
 await requireMarkers('src/security/securityEventArchive.js', 'Security archive', ['SECURITY_ARCHIVE_INTEGRITY_FAILED', 'shared-file-encrypted-hash-chain', 'prunePlanPath', 'recoverHeadLocked']);
-await requireMarkers('src/security/securityArchiveCodec.js', 'Security archive codec', ['aes-256-gcm', 'signAnchor', 'signPrunePlan', 'ciphertext']);
+await requireMarkers('src/security/securityArchiveCodec.js', 'Security archive codec', ['aes-256-gcm', 'WORKFORCE_AUDIT_SECURITY_ARCHIVE_KEYS', 'primaryKeyId', 'identifySignedKey', 'ciphertext']);
 await requireMarkers('src/security/securityArchiveFilesystem.js', 'Security archive filesystem', ['prune-plan.json', 'appendSegment', 'atomicWrite', 'fsyncDirectory']);
-await requireMarkers('src/security/securityAlertCodec.js', 'Security alert codec', ['x-basitclaw-signature', 'retryAfterDelayMs', 'validateWebhookEndpoint', 'minimumSeverity']);
+await requireMarkers('src/security/securityKeyLifecycle.js', 'Security key lifecycle', ['archiveCanRetire', 'retainedHistoricalKeyIds', 'lifecycle_unavailable', 'receiver_overlap_confirmation_required']);
+await requireMarkers('src/security/securityAlertCodec.js', 'Security alert codec', ['x-basitclaw-signature', 'x-basitclaw-key-id', 'WORKFORCE_AUDIT_SECURITY_ALERT_SIGNING_SECRETS', 'primarySigningKeyId']);
 await requireMarkers('src/security/securityAlertOutbox.js', 'Security alert outbox', ['shared-file-durable-outbox', 'dead-letter', 'claimExpiresAt', 'commitDestination']);
 await requireMarkers('src/security/securityAlertDispatcher.js', 'Security alert dispatcher', ['signed-webhook-durable-outbox', 'SECURITY_ALERT_DELIVERY_UNAVAILABLE', 'dispatchDue', 'maximum_attempts_exceeded']);
 await requireMarkers('src/security/securityAlertRuntime.js', 'Security alert runtime', ['WORKFORCE_AUDIT_SECURITY_ALERT_AUTO_START', 'WORKFORCE_AUDIT_SECURITY_ALERT_DEAD_LETTER_RETENTION', 'createSecurityAlertOutbox']);
-await requireMarkers('src/security/securityTelemetry.js', 'Security telemetry', ['bounded-memory-plus-encrypted-archive', 'listArchived', 'verifyArchive', 'alertDelivery', 'redactOperationalPaths']);
+await requireMarkers('src/security/securityTelemetry.js', 'Security telemetry', ['bounded-memory-plus-encrypted-archive', 'listArchived', 'keyLifecycle', 'redactLifecycle', 'redactOperationalPaths']);
 await requireMarkers('scripts/generate-api-credential.js', 'Credential generator', ['generateApiCredential', 'presentedKey', 'secretHash', 'randomBytes']);
 await requireMarkers('scripts/security-alerts.js', 'Security alert CLI', ['dead-letters', 'dispatchDue', 'requeue', 'WORKFORCE_AUDIT_SECURITY_ALERT_AUTO_START']);
-await requireMarkers('docs/security-alert-delivery.md', 'Security alert runbook', ['at least once', 'x-basitclaw-signature', 'dead-letter', 'deduplicate']);
+await requireMarkers('scripts/security-keys.js', 'Security key CLI', ['archive-can-retire', 'alert-can-retire', '--receiver-confirmed', 'SECURITY_KEY_COMMAND_FAILED']);
+await requireMarkers('docs/security-alert-delivery.md', 'Security alert runbook', ['at least once', 'x-basitclaw-key-id', 'dead-letter', 'deduplicate']);
+await requireMarkers('docs/security-key-rotation.md', 'Security key rotation runbook', ['archive-can-retire', 'alert-can-retire', '--receiver-confirmed', 'missingKeyIds']);
 await requireMarkers('src/server.js', 'Server', ['/backups', 'backup:restore', 'security-archive-events', 'security-archive-integrity', 'RateLimitStoreError', 'publicSecurityHealth']);
-await requireMarkers('public/workforce-audit.html', 'Dashboard', ['Workforce Audit Assurance', 'Distributed rate limit', 'Security archive', 'Security alert delivery', 'API Security Events', 'x-api-key']);
+await requireMarkers('public/workforce-audit.html', 'Dashboard', ['Workforce Audit Assurance', 'Archive key rotation', 'Historical archive keys', 'Alert signing rotation', 'Security alert delivery', 'API Security Events']);
 
 console.log('Build verification passed.');

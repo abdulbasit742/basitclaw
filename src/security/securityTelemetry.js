@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createSecurityAlertRuntimeFromEnvironment } from './securityAlertRuntime.js';
+import { createSecurityKeyLifecycleFromEnvironment } from './securityKeyLifecycle.js';
 
 export function createSecurityTelemetry({
   now = () => new Date(),
@@ -7,7 +8,8 @@ export function createSecurityTelemetry({
   maxEvents = 2000,
   ephemeralPepper = false,
   archive = null,
-  alertDispatcher = null
+  alertDispatcher = null,
+  keyLifecycle = null
 } = {}) {
   const limit = normaliseInteger(maxEvents, 'maxEvents', 100, 100_000);
   const safePepper = String(pepper ?? '');
@@ -101,6 +103,10 @@ export function createSecurityTelemetry({
       status: 'disabled', enabled: false, required: false, mode: 'disabled'
     };
     const alertHealth = redactOperationalPaths(rawAlertHealth);
+    const lifecycleHealth = keyLifecycle?.status?.() ?? {
+      archive: { status: 'disabled', mode: 'disabled', rotationReady: false },
+      alertSigning: { status: 'disabled', mode: 'disabled', rotationReady: false }
+    };
     const archiveFailure = archiveHealth.required && archiveHealth.status !== 'ready';
     const alertFailure = alertHealth.required && alertHealth.status !== 'ready';
     const evidenceRequired = Boolean(archiveHealth.required || alertHealth.required);
@@ -131,6 +137,10 @@ export function createSecurityTelemetry({
         ...alertHealth,
         enqueueFailures: alertEnqueueFailures,
         lastEnqueueError: lastAlertError
+      },
+      keyLifecycle: {
+        archive: redactLifecycle(lifecycleHealth.archive),
+        alertSigning: redactLifecycle(lifecycleHealth.alertSigning)
       }
     };
   }
@@ -156,7 +166,7 @@ export function createSecurityTelemetry({
 
 export function createSecurityTelemetryFromEnvironment(
   env = process.env,
-  { archive = null, alertDispatcher = null } = {}
+  { archive = null, alertDispatcher = null, keyLifecycle = null } = {}
 ) {
   const configuredPepper = env.WORKFORCE_AUDIT_SECURITY_EVENT_PEPPER;
   const delivery = alertDispatcher ?? createSecurityAlertRuntimeFromEnvironment(env);
@@ -165,7 +175,8 @@ export function createSecurityTelemetryFromEnvironment(
     ephemeralPepper: !configuredPepper,
     maxEvents: Number(env.WORKFORCE_AUDIT_SECURITY_EVENT_RETENTION ?? 2000),
     archive,
-    alertDispatcher: delivery
+    alertDispatcher: delivery,
+    keyLifecycle: keyLifecycle ?? createSecurityKeyLifecycleFromEnvironment(env)
   });
 }
 
@@ -179,6 +190,20 @@ function redactOperationalPaths(value) {
   }
   if (clone.mutex && typeof clone.mutex === 'object') delete clone.mutex.directory;
   return clone;
+}
+
+function redactLifecycle(value = {}) {
+  return {
+    status: value.status ?? 'unavailable',
+    mode: value.mode ?? 'unknown',
+    configuredKeyCount: value.configuredKeyCount ?? 0,
+    retainedHistoricalKeyCount: value.retainedHistoricalKeyIds?.length ?? 0,
+    retirementSafeKeyCount: value.retirementSafeKeyIds?.length ?? 0,
+    missingKeyCount: value.missingKeyIds?.length ?? 0,
+    rotationReady: Boolean(value.rotationReady),
+    receiverOverlapRequired: Boolean(value.receiverOverlapRequired),
+    error: value.error ?? null
+  };
 }
 
 function hashValue(value) {

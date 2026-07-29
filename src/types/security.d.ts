@@ -2,6 +2,7 @@ export type ApiCredentialStatus = 'active' | 'retiring' | 'revoked';
 export type RateLimitPolicyName = 'burst' | 'authFailure' | 'read' | 'write' | 'sensitive';
 export type SecurityEventSeverity = 'info' | 'warning' | 'high' | 'critical';
 export type SecurityAlertDeliveryState = 'pending' | 'inflight' | 'delivered' | 'dead-letter';
+export type SecurityKeyLifecycleStatus = 'ready' | 'legacy-single-key' | 'unavailable' | 'disabled';
 
 export interface HashedApiCredentialRecord {
   keyId: string;
@@ -181,6 +182,18 @@ export interface SecurityAlertDeadLetter {
   event: SecurityEvent;
 }
 
+export interface SecurityKeyLifecycleSummary {
+  status: SecurityKeyLifecycleStatus;
+  mode: 'keyring' | 'single-key' | 'disabled' | 'unknown';
+  configuredKeyCount: number;
+  retainedHistoricalKeyCount: number;
+  retirementSafeKeyCount: number;
+  missingKeyCount: number;
+  rotationReady: boolean;
+  receiverOverlapRequired: boolean;
+  error: string | null;
+}
+
 export interface SecurityTelemetrySummary {
   status: 'ready' | 'unavailable';
   mode: 'bounded-memory-hash-chain' | 'bounded-memory-plus-encrypted-archive';
@@ -195,6 +208,10 @@ export interface SecurityTelemetrySummary {
   integrity: { valid: boolean; retainedEvents: number; failedEventId: string | null; headHash: string | null; };
   archive: SecurityArchiveHealth;
   alertDelivery: SecurityAlertDeliveryHealth;
+  keyLifecycle: {
+    archive: SecurityKeyLifecycleSummary;
+    alertSigning: SecurityKeyLifecycleSummary;
+  };
 }
 
 export interface ApiSecurityStatus {
