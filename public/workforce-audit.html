@@ -9,7 +9,7 @@
     * { box-sizing: border-box; }
     body { margin: 0; }
     header { padding: 28px clamp(20px, 5vw, 72px); background: #102a43; color: white; }
-    header p { max-width: 980px; color: #d9e2ec; }
+    header p { max-width: 1000px; color: #d9e2ec; }
     main { padding: 24px clamp(20px, 5vw, 72px) 60px; }
     .auth, .grid { display: grid; gap: 16px; }
     .auth { grid-template-columns: minmax(220px, 1fr) auto; align-items: end; margin-bottom: 20px; }
@@ -35,7 +35,7 @@
 <body>
 <header>
   <h1>Workforce Audit Assurance</h1>
-  <p>Tenant-isolated audit readiness with encrypted persistence, governed recovery, fenced multi-process writes, lifecycle-managed API credentials, and adaptive abuse controls.</p>
+  <p>Tenant-isolated audit readiness with encrypted persistence, governed recovery, fenced writes, lifecycle-managed credentials, distributed abuse controls, and encrypted security evidence.</p>
 </header>
 <main>
   <form id="auth" class="auth">
@@ -68,7 +68,7 @@
   </section>
   <section id="securitySection" hidden>
     <h2>API Security Events</h2>
-    <p class="muted">Client addresses are represented only by keyed fingerprints. API secrets are never retained in this event buffer.</p>
+    <p class="muted">Client addresses are represented only by keyed fingerprints. When enabled, the same redacted events are retained in the encrypted shared Security archive.</p>
     <table><thead><tr><th>Time</th><th>Type</th><th>Severity</th><th>Credential</th><th>Route</th><th>Outcome</th></tr></thead><tbody id="securityEvents"></tbody></table>
   </section>
 </main>
@@ -92,10 +92,8 @@
       const canReadCoordination = session.permissions.includes('coordination:read');
       const canReadSecurity = session.permissions.includes('security:read');
       const [overview, universe, engagements, providers, persistence, backups, replicas, resilience, coordination, security, securityEvents] = await Promise.all([
-        secureFetch('/api/workforce-audit/overview'),
-        secureFetch('/api/workforce-audit/universe'),
-        secureFetch('/api/workforce-audit/engagements'),
-        secureFetch('/api/workforce-audit/providers'),
+        secureFetch('/api/workforce-audit/overview'), secureFetch('/api/workforce-audit/universe'),
+        secureFetch('/api/workforce-audit/engagements'), secureFetch('/api/workforce-audit/providers'),
         secureFetch('/api/workforce-audit/persistence-health').catch(() => null),
         canReadBackups ? secureFetch('/api/workforce-audit/backups') : Promise.resolve(null),
         canReadReplicas ? secureFetch('/api/workforce-audit/replicas').catch(() => []) : Promise.resolve(null),
@@ -108,17 +106,17 @@
       document.querySelector('#identity').textContent = `${session.subject} · ${session.role} · ${session.tenantId} · ${session.keyId}${rotationNotice}`;
       const cards = [
         ['Audit areas ready', `${overview.universe.ready}/${overview.universe.total}`],
-        ['Active engagements', overview.engagements.active],
-        ['High-risk findings', overview.findings.criticalOrHigh],
-        ['Encrypted storage', persistence?.status ?? 'restricted'],
-        ['Recovery points', backups ? backups.length : 'restricted'],
-        ['Replica status', resilience?.replicaHealth?.status ?? 'restricted'],
-        ['Recovery drill', resilience?.drill?.status ?? 'restricted'],
+        ['Active engagements', overview.engagements.active], ['High-risk findings', overview.findings.criticalOrHigh],
+        ['Encrypted storage', persistence?.status ?? 'restricted'], ['Recovery points', backups ? backups.length : 'restricted'],
+        ['Replica status', resilience?.replicaHealth?.status ?? 'restricted'], ['Recovery drill', resilience?.drill?.status ?? 'restricted'],
         ['Write coordination', coordination?.enabled ? coordination.status : 'disabled'],
         ['Fencing token', coordination?.latestFencingToken ?? 'restricted'],
         ['Credential health', security?.credentials?.status ?? 'restricted'],
         ['Keys needing rotation', security?.credentials?.rotationRequired ?? 'restricted'],
-        ['Rate limiting', security?.rateLimiting?.status ?? 'restricted']
+        ['Rate limiting', security?.rateLimiting?.status ?? 'restricted'],
+        ['Distributed rate limit', security?.rateLimiting?.distributed ? security.rateLimiting.status : 'local'],
+        ['Security archive', security?.telemetry?.archive?.status ?? 'restricted'],
+        ['Archive sequence', security?.telemetry?.archive?.headSequence ?? 'restricted']
       ];
       document.querySelector('#metrics').innerHTML = cards.map(([label, value]) => `<article class="card"><div class="muted">${escapeHtml(label)}</div><div class="metric">${escapeHtml(value)}</div></article>`).join('');
       document.querySelector('#universe').innerHTML = universe.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.riskTier)}</td><td>${escapeHtml(item.owner)}</td><td><span class="badge ${item.readinessScore < 80 ? 'attention' : ''}">${escapeHtml(item.readinessScore)}%</span></td><td>${escapeHtml(item.openFindings)}</td></tr>`).join('');
@@ -130,9 +128,7 @@
       if (replicas) document.querySelector('#replicas').innerHTML = replicas.map((item) => `<tr><td>${escapeHtml(item.backupId)}</td><td>${escapeHtml(item.replicatedAt)}</td><td>${escapeHtml(item.kind)}</td><td>${escapeHtml(item.keyId)}</td><td>${escapeHtml(item.sizeBytes)} bytes</td><td>${escapeHtml(item.checksumSha256.slice(0, 16))}…</td></tr>`).join('');
       document.querySelector('#securitySection').hidden = !securityEvents;
       if (securityEvents) document.querySelector('#securityEvents').innerHTML = securityEvents.events.map((item) => `<tr><td>${escapeHtml(item.occurredAt)}</td><td>${escapeHtml(item.type)}</td><td><span class="badge ${escapeHtml(item.severity)}">${escapeHtml(item.severity)}</span></td><td>${escapeHtml(item.keyId || 'unknown')}</td><td>${escapeHtml(item.method || '')} ${escapeHtml(item.route || '')}</td><td>${escapeHtml(item.outcome)}</td></tr>`).join('');
-    } catch (error) {
-      document.querySelector('#error').textContent = `Unable to load audit data: ${error.message}`;
-    }
+    } catch (error) { document.querySelector('#error').textContent = `Unable to load audit data: ${error.message}`; }
   }
 
   async function secureFetch(path) {
