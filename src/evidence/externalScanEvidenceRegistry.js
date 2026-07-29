@@ -26,11 +26,13 @@ export function createExternalScanEvidenceRegistry({
 
   function recordExternalScanAttestation(bodyBuffer, headers) {
     return policyLock.withLock(POLICY_RESOURCE, () => {
+      let authenticatedTenantId = null;
       const result = attestations.acceptSigned(bodyBuffer, headers, (attestation) => {
+        authenticatedTenantId = attestation.tenantId;
         const report = registry.screeningReport(attestation.tenantId, attestation.evidenceId, { version: attestation.version });
         return { version: report.version, contentSha256: report.contentSha256 };
       });
-      const jobCompletion = jobs.completeFromAttestation(result.attestation);
+      const jobCompletion = jobs.completeFromAttestation({ ...result.attestation, tenantId: authenticatedTenantId });
       return { ...result, jobCompletion };
     });
   }
