@@ -58,7 +58,7 @@ await requireMarkers('src/security/securityTelemetry.js', 'Security telemetry', 
 await requireMarkers('scripts/generate-api-credential.js', 'Credential generator', ['generateApiCredential', 'presentedKey', 'secretHash', 'randomBytes']);
 await requireMarkers('scripts/security-alerts.js', 'Security alert CLI', ['dead-letters', 'dispatchDue', 'requeue', 'WORKFORCE_AUDIT_SECURITY_ALERT_AUTO_START']);
 await requireMarkers('scripts/security-keys.js', 'Security key CLI', ['archive-can-retire', 'alert-can-retire', '--receiver-confirmed', 'SECURITY_KEY_COMMAND_FAILED']);
-await requireMarkers('docs/identity-federation.md', 'Identity federation runbook', ['hybrid', 'group-to-role', 'identity:check', 'OIDC_UNAVAILABLE', 'SCIM']);
+await requireMarkers('docs/identity-federation.md', 'Identity federation runbook', ['hybrid', 'group mappings', 'identity:check', 'OIDC_UNAVAILABLE', 'SCIM']);
 await requireMarkers('docs/security-alert-delivery.md', 'Security alert runbook', ['at least once', 'x-basitclaw-key-id', 'dead-letter', 'deduplicate']);
 await requireMarkers('docs/security-key-rotation.md', 'Security key rotation runbook', ['archive-can-retire', 'alert-can-retire', '--receiver-confirmed', 'missingKeyIds']);
 await requireMarkers('src/server.js', 'Server', ['/backups', 'backup:restore', 'security-archive-events', 'security-archive-integrity', 'RateLimitStoreError', 'publicSecurityHealth']);
