@@ -6,6 +6,8 @@ import {
 } from './privilegedAccessRegistry.js';
 
 const PREFIX = '/api/workforce-audit/privileged-access';
+const REQUEST_ROUTE = new RegExp(`^${PREFIX}/requests/([^/]+)$`);
+const ACTION_ROUTE = new RegExp(`^${PREFIX}/requests/([^/]+)/(approve|deny|cancel|revoke|review)$`);
 
 export function createPrivilegedAccessHandler({ registry, authenticationGateway, securityTelemetry = null } = {}) {
   if (!registry || typeof registry.status !== 'function') throw new TypeError('A privileged-access registry is required.');
@@ -27,7 +29,7 @@ export function createPrivilegedAccessHandler({ registry, authenticationGateway,
         const canReviewAll = principal.permissions.includes('privileged:approve') || principal.permissions.includes('privileged:revoke');
         const data = registry.list({
           tenantId: principal.tenantId,
-          subject: canReviewAll ? url.searchParams.get('subject') : principal.subject,
+          subject: canReviewAll ? safeSubject(url.searchParams.get('subject')) : principal.subject,
           status: url.searchParams.get('status'),
           limit: positiveInteger(url.searchParams.get('limit'), 100, 500)
         });
@@ -46,7 +48,7 @@ export function createPrivilegedAccessHandler({ registry, authenticationGateway,
         return sendJson(res, 201, { success: true, data, meta: meta(requestId, principal) }, requestId, { etag: etag(data.version) });
       }
 
-      const requestMatch = url.pathname.match(new RegExp(`^${PREFIX}/requests/([^/]+)$`));
+      const requestMatch = url.pathname.match(REQUEST_ROUTE);
       if (req.method === 'GET' && requestMatch) {
         authenticationGateway.authorise(principal, 'privileged:read');
         const data = registry.get(decodeURIComponent(requestMatch[1]));
@@ -54,7 +56,7 @@ export function createPrivilegedAccessHandler({ registry, authenticationGateway,
         return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId, { etag: etag(data.version) });
       }
 
-      const actionMatch = url.pathname.match(new RegExp(`^${PREFIX}/requests/([^/]+)/(approve|deny|cancel|revoke|review)$`));
+      const actionMatch = url.pathname.match(ACTION_ROUTE);
       if (req.method === 'POST' && actionMatch) {
         const id = decodeURIComponent(actionMatch[1]);
         const action = actionMatch[2];
@@ -151,6 +153,14 @@ function ensureVisible(request, principal) {
   if (!canReviewAll && request.subject !== principal.subject) {
     throw new PrivilegedAccessError('This privileged-access request is not visible to the principal.', 'PRIVILEGED_ACCESS_READ_DENIED');
   }
+}
+
+function safeSubject(value) {
+  if (value === null) return null;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{1,255}$/.test(String(value))) {
+    throw new PrivilegedAccessError('subject filter is invalid.', 'PRIVILEGED_ACCESS_INPUT_INVALID', { field: 'subject' }, 400);
+  }
+  return String(value);
 }
 
 function expectedVersion(value) {
