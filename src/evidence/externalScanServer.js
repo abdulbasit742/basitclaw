@@ -4,6 +4,7 @@ import { createAdaptiveRateLimiterFromEnvironment } from '../security/rateLimite
 import { createEvidenceAwareApp } from './evidenceServer.js';
 import { createExternalScanCallbackHandler } from './externalScanCallbackHandler.js';
 import { createExternalScanEvidenceRegistryFromEnvironment } from './externalScanEvidenceRegistry.js';
+import { createExternalScanManagementHandler } from './externalScanManagementHandler.js';
 
 export function createExternalScanAwareApp({
   env = process.env,
@@ -11,7 +12,13 @@ export function createExternalScanAwareApp({
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
   baseApp = createEvidenceAwareApp({ env, evidenceRegistry, rateLimiter }),
   securityTelemetry = baseApp.apiSecurity?.securityTelemetry,
-  callbackHandler = createExternalScanCallbackHandler({ registry: evidenceRegistry, rateLimiter, securityTelemetry })
+  callbackHandler = createExternalScanCallbackHandler({ registry: evidenceRegistry, rateLimiter, securityTelemetry }),
+  managementHandler = createExternalScanManagementHandler({
+    registry: evidenceRegistry,
+    authenticationGateway: baseApp.authenticationGateway,
+    rateLimiter,
+    securityTelemetry
+  })
 } = {}) {
   const baseHandler = baseApp.listeners('request')[0];
   if (typeof baseHandler !== 'function') throw new TypeError('The evidence application must expose a request handler.');
@@ -21,6 +28,7 @@ export function createExternalScanAwareApp({
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
       if (callbackHandler.matches(url.pathname)) return await callbackHandler.handle(req, res, requestId);
+      if (managementHandler.matches(url.pathname)) return await managementHandler.handle(req, res, requestId);
       return await baseHandler(req, res);
     } catch (error) {
       console.error('Unhandled external scanner server error', { requestId, code: error?.code, error: error?.message });
@@ -49,6 +57,7 @@ export function createExternalScanAwareApp({
   server.evidenceHandler = baseApp.evidenceHandler;
   server.evidenceReferenceMutex = baseApp.evidenceReferenceMutex;
   server.externalScanCallbackHandler = callbackHandler;
+  server.externalScanManagementHandler = managementHandler;
   server.auditRegistry = baseApp.auditRegistry;
   return server;
 }
