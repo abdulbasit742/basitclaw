@@ -43,7 +43,11 @@ export function createAuthenticationGateway({
         throw error;
       }
       enforceTenantHeader(req, principal);
-      return Object.freeze({ ...principal, permissions: permissionsForRole(principal.role) });
+      return Object.freeze({
+        ...principal,
+        keyId: stableFederatedKeyId(principal),
+        permissions: permissionsForRole(principal.role)
+      });
     }
 
     if (apiKey) {
@@ -124,6 +128,17 @@ function loadApiPrincipals(env) {
     return [{ apiKey: 'local-development-key', subject: 'local-admin', tenantId: 'tenant-demo', role: 'compliance_admin' }];
   }
   try { return JSON.parse(raw); } catch { throw new Error('WORKFORCE_AUDIT_API_KEYS must be valid JSON.'); }
+}
+
+function stableFederatedKeyId(principal) {
+  const externalSubjectHash = String(principal?.externalSubjectHash ?? '').trim();
+  if (/^[a-f0-9]{24,64}$/.test(externalSubjectHash)) return `oidc-${externalSubjectHash.slice(0, 24)}`;
+  const existing = String(principal?.keyId ?? '').trim();
+  if (/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(existing)) return existing;
+  throw new AuthenticationError('The federated identity key is invalid.', {
+    code: 'OIDC_SUBJECT_INVALID',
+    details: { reason: 'invalid_federated_key' }
+  });
 }
 
 function enforceTenantHeader(req, principal) {
