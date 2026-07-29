@@ -1,94 +1,44 @@
 import { access, readFile } from 'node:fs/promises';
 
 const requiredFiles = [
-  'src/server.js',
-  'src/security/accessControl.js',
-  'src/security/rateLimiter.js',
-  'src/security/securityTelemetry.js',
-  'scripts/generate-api-credential.js',
-  'src/persistence/encryptedSnapshotStore.js',
-  'src/persistence/backupManager.js',
-  'src/resilience/replicaManager.js',
-  'src/resilience/resilienceScheduler.js',
-  'src/coordination/fileLeaseCoordinator.js',
-  'src/coordination/fencedSnapshotStore.js',
-  'src/coordination/coordinatedRegistry.js',
-  'src/services/workforceAuditService.js',
-  'src/services/workforceAuditRegistry.js',
-  'src/services/governanceLedger.js',
-  'public/workforce-audit.html',
-  'src/types/workforceAudit.d.ts',
-  'src/types/coordination.d.ts',
-  'src/types/security.d.ts',
-  'docs/api-security.md',
+  'src/server.js', 'src/security/accessControl.js', 'src/security/rateLimiter.js',
+  'src/security/sharedRateLimiter.js', 'src/security/fileMutex.js', 'src/security/securityTelemetry.js',
+  'src/security/securityArchiveCodec.js', 'src/security/securityArchiveFilesystem.js',
+  'src/security/securityEventArchive.js', 'scripts/generate-api-credential.js',
+  'src/persistence/encryptedSnapshotStore.js', 'src/persistence/backupManager.js',
+  'src/resilience/replicaManager.js', 'src/resilience/resilienceScheduler.js',
+  'src/coordination/fileLeaseCoordinator.js', 'src/coordination/fencedSnapshotStore.js',
+  'src/coordination/coordinatedRegistry.js', 'src/services/workforceAuditService.js',
+  'src/services/workforceAuditRegistry.js', 'src/services/governanceLedger.js',
+  'public/workforce-audit.html', 'src/types/workforceAudit.d.ts',
+  'src/types/coordination.d.ts', 'src/types/security.d.ts', 'docs/api-security.md',
   '.github/workflows/ci.yml'
 ];
 
 for (const file of requiredFiles) await access(new URL(`../${file}`, import.meta.url));
 
-const persistence = await readFile(new URL('../src/persistence/encryptedSnapshotStore.js', import.meta.url), 'utf8');
-for (const marker of ['aes-256-gcm', 'writeEncrypted', 'inspectEncrypted', 'serialize', 'WORKFORCE_AUDIT_PRIMARY_KEY_ID']) {
-  if (!persistence.includes(marker)) throw new Error(`Persistence build verification failed: missing ${marker}.`);
+async function requireMarkers(path, label, markers) {
+  const content = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
+  for (const marker of markers) if (!content.includes(marker)) throw new Error(`${label} build verification failed: missing ${marker}.`);
 }
 
-const backups = await readFile(new URL('../src/persistence/backupManager.js', import.meta.url), 'utf8');
-for (const marker of ['checksumSha256', 'BACKUP_INTEGRITY_FAILED', 'WORKFORCE_AUDIT_BACKUP_RETENTION', 'safety']) {
-  if (!backups.includes(marker)) throw new Error(`Backup build verification failed: missing ${marker}.`);
-}
-
-const replicas = await readFile(new URL('../src/resilience/replicaManager.js', import.meta.url), 'utf8');
-for (const marker of ['encrypted-file-replica', 'REPLICA_INTEGRITY_FAILED', 'WORKFORCE_AUDIT_REPLICA_DIR', 'idempotent']) {
-  if (!replicas.includes(marker)) throw new Error(`Replica build verification failed: missing ${marker}.`);
-}
-
-const coordinator = await readFile(new URL('../src/coordination/fileLeaseCoordinator.js', import.meta.url), 'utf8');
-for (const marker of ['WRITE_COORDINATION_BUSY', 'fencingToken', 'stale', 'WORKFORCE_AUDIT_COORDINATION_MODE']) {
-  if (!coordinator.includes(marker)) throw new Error(`Coordination build verification failed: missing ${marker}.`);
-}
-
-const fencedStore = await readFile(new URL('../src/coordination/fencedSnapshotStore.js', import.meta.url), 'utf8');
-for (const marker of ['PERSISTENCE_FENCE_REJECTED', 'snapshot.fenced', 'latestFencingToken', 'bindFencingToken']) {
-  if (!fencedStore.includes(marker)) throw new Error(`Fencing build verification failed: missing ${marker}.`);
-}
-
-const coordinatedRegistry = await readFile(new URL('../src/coordination/coordinatedRegistry.js', import.meta.url), 'utf8');
-for (const marker of ['createRuntimeWorkforceAuditRegistry', 'createReadOnlyStore', 'getCoordinationStatus', 'createRegistry']) {
-  if (!coordinatedRegistry.includes(marker)) throw new Error(`Coordinated registry build verification failed: missing ${marker}.`);
-}
-
-const scheduler = await readFile(new URL('../src/resilience/resilienceScheduler.js', import.meta.url), 'utf8');
-for (const marker of ['WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES', 'runResilienceCycle', 'unref']) {
-  if (!scheduler.includes(marker)) throw new Error(`Scheduler build verification failed: missing ${marker}.`);
-}
-
-const accessControl = await readFile(new URL('../src/security/accessControl.js', import.meta.url), 'utf8');
-for (const marker of ['scryptSync', 'CREDENTIAL_REVOKED', 'credentialHealth', 'rotationRequired']) {
-  if (!accessControl.includes(marker)) throw new Error(`Credential build verification failed: missing ${marker}.`);
-}
-
-const rateLimiter = await readFile(new URL('../src/security/rateLimiter.js', import.meta.url), 'utf8');
-for (const marker of ['RATE_LIMITED', 'authFailure', 'sensitive', 'WORKFORCE_AUDIT_TRUST_PROXY_HOPS']) {
-  if (!rateLimiter.includes(marker)) throw new Error(`Rate-limit build verification failed: missing ${marker}.`);
-}
-
-const telemetry = await readFile(new URL('../src/security/securityTelemetry.js', import.meta.url), 'utf8');
-for (const marker of ['bounded-memory-hash-chain', 'ipFingerprint', 'WORKFORCE_AUDIT_SECURITY_EVENT_PEPPER', 'previousHash']) {
-  if (!telemetry.includes(marker)) throw new Error(`Security telemetry build verification failed: missing ${marker}.`);
-}
-
-const generator = await readFile(new URL('../scripts/generate-api-credential.js', import.meta.url), 'utf8');
-for (const marker of ['generateApiCredential', 'presentedKey', 'secretHash', 'randomBytes']) {
-  if (!generator.includes(marker)) throw new Error(`Credential generator build verification failed: missing ${marker}.`);
-}
-
-const server = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
-for (const marker of ['/backups', 'backup:restore', 'coordination-status', 'security-status', 'security-events', 'RateLimitError', 'x-api-key-rotation-required']) {
-  if (!server.includes(marker)) throw new Error(`Server build verification failed: missing ${marker}.`);
-}
-
-const page = await readFile(new URL('../public/workforce-audit.html', import.meta.url), 'utf8');
-for (const marker of ['Workforce Audit Assurance', 'Write coordination', 'Credential health', 'API Security Events', 'x-api-key']) {
-  if (!page.includes(marker)) throw new Error(`Dashboard build verification failed: missing ${marker}.`);
-}
+await requireMarkers('src/persistence/encryptedSnapshotStore.js', 'Persistence', ['aes-256-gcm', 'writeEncrypted', 'inspectEncrypted', 'serialize', 'WORKFORCE_AUDIT_PRIMARY_KEY_ID']);
+await requireMarkers('src/persistence/backupManager.js', 'Backup', ['checksumSha256', 'BACKUP_INTEGRITY_FAILED', 'WORKFORCE_AUDIT_BACKUP_RETENTION', 'safety']);
+await requireMarkers('src/resilience/replicaManager.js', 'Replica', ['encrypted-file-replica', 'REPLICA_INTEGRITY_FAILED', 'WORKFORCE_AUDIT_REPLICA_DIR', 'idempotent']);
+await requireMarkers('src/coordination/fileLeaseCoordinator.js', 'Coordination', ['WRITE_COORDINATION_BUSY', 'fencingToken', 'stale', 'WORKFORCE_AUDIT_COORDINATION_MODE']);
+await requireMarkers('src/coordination/fencedSnapshotStore.js', 'Fencing', ['PERSISTENCE_FENCE_REJECTED', 'snapshot.fenced', 'latestFencingToken', 'bindFencingToken']);
+await requireMarkers('src/coordination/coordinatedRegistry.js', 'Coordinated registry', ['createRuntimeWorkforceAuditRegistry', 'createReadOnlyStore', 'getCoordinationStatus', 'createRegistry']);
+await requireMarkers('src/resilience/resilienceScheduler.js', 'Scheduler', ['WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES', 'runResilienceCycle', 'unref']);
+await requireMarkers('src/security/accessControl.js', 'Credential', ['scryptSync', 'CREDENTIAL_REVOKED', 'credentialHealth', 'rotationRequired']);
+await requireMarkers('src/security/rateLimiter.js', 'Rate limit', ['RATE_LIMITED', 'shared-file', 'WORKFORCE_AUDIT_DISTRIBUTED_RATE_LIMIT_REQUIRED', 'WORKFORCE_AUDIT_TRUST_PROXY_HOPS']);
+await requireMarkers('src/security/sharedRateLimiter.js', 'Shared rate limit', ['shared-file-fixed-window', 'RATE_LIMIT_STORE_UNAVAILABLE', 'identityHash', 'atomicWriteJson']);
+await requireMarkers('src/security/fileMutex.js', 'Security mutex', ['SECURITY_CONTROL_BUSY', 'stale', 'owner.json', 'withLock']);
+await requireMarkers('src/security/securityEventArchive.js', 'Security archive', ['SECURITY_ARCHIVE_INTEGRITY_FAILED', 'shared-file-encrypted-hash-chain', 'prunePlanPath', 'recoverHeadLocked']);
+await requireMarkers('src/security/securityArchiveCodec.js', 'Security archive codec', ['aes-256-gcm', 'signAnchor', 'signPrunePlan', 'ciphertext']);
+await requireMarkers('src/security/securityArchiveFilesystem.js', 'Security archive filesystem', ['prune-plan.json', 'appendSegment', 'atomicWrite', 'fsyncDirectory']);
+await requireMarkers('src/security/securityTelemetry.js', 'Security telemetry', ['bounded-memory-plus-encrypted-archive', 'listArchived', 'verifyArchive', 'ipFingerprint']);
+await requireMarkers('scripts/generate-api-credential.js', 'Credential generator', ['generateApiCredential', 'presentedKey', 'secretHash', 'randomBytes']);
+await requireMarkers('src/server.js', 'Server', ['/backups', 'backup:restore', 'security-archive-events', 'security-archive-integrity', 'RateLimitStoreError', 'publicSecurityHealth']);
+await requireMarkers('public/workforce-audit.html', 'Dashboard', ['Workforce Audit Assurance', 'Distributed rate limit', 'Security archive', 'API Security Events', 'x-api-key']);
 
 console.log('Build verification passed.');
