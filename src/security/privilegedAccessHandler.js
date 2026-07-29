@@ -22,7 +22,6 @@ export function createPrivilegedAccessHandler({ registry, authenticationGateway,
         authenticationGateway.authorise(principal, 'privileged:read');
         return sendJson(res, 200, { success: true, data: publicStatus(registry.status()), meta: meta(requestId, principal) }, requestId);
       }
-
       if (req.method === 'GET' && url.pathname === `${PREFIX}/requests`) {
         authenticationGateway.authorise(principal, 'privileged:read');
         const canReviewAll = principal.permissions.includes('privileged:approve') || principal.permissions.includes('privileged:revoke');
@@ -34,14 +33,12 @@ export function createPrivilegedAccessHandler({ registry, authenticationGateway,
         });
         return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId);
       }
-
       if (req.method === 'POST' && url.pathname === `${PREFIX}/requests`) {
         authenticationGateway.authorise(principal, 'privileged:request');
         const data = registry.requestAccess(principal, await readJson(req), { actor: principal.subject });
         record(securityTelemetry, event('privileged_access.requested', 'warning', principal, req, requestId, data));
         return sendJson(res, 201, { success: true, data, meta: meta(requestId, principal) }, requestId, { etag: etag(data.version) });
       }
-
       if (req.method === 'POST' && url.pathname === `${PREFIX}/break-glass`) {
         authenticationGateway.authorise(principal, 'privileged:break_glass');
         const data = registry.activateBreakGlass(principal, await readJson(req), { actor: principal.subject });
@@ -131,6 +128,14 @@ export function createPrivilegedAccessHandler({ registry, authenticationGateway,
           meta: meta(requestId, principal)
         }, requestId);
       }
+      if (error instanceof TypeError) {
+        return sendJson(res, 400, {
+          success: false,
+          error: error.message,
+          code: 'PRIVILEGED_ACCESS_INPUT_INVALID',
+          meta: meta(requestId, principal)
+        }, requestId);
+      }
       throw error;
     }
   }
@@ -162,9 +167,7 @@ function expectedVersion(value) {
   return Number(match[1] ?? match[2] ?? match[3]);
 }
 
-function etag(version) {
-  return `W/"${version}"`;
-}
+function etag(version) { return `W/"${version}"`; }
 
 async function readJson(req) {
   const contentType = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
@@ -184,9 +187,8 @@ async function readJson(req) {
     }
     chunks.push(chunk);
   }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-  } catch {
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
+  catch {
     const error = new Error('Request body must be valid JSON.');
     error.code = 'INVALID_JSON';
     throw error;
