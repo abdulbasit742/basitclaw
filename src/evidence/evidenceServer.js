@@ -4,6 +4,11 @@ import { createServer } from 'node:http';
 import { createRuntimeWorkforceAuditRegistry } from '../coordination/coordinatedRegistry.js';
 import { createFederatedApp } from '../federatedServer.js';
 import { AuthenticationError, AuthorizationError } from '../security/accessControl.js';
+import {
+  SecurityControlBusyError,
+  SecurityControlUnavailableError,
+  createFileMutex
+} from '../security/fileMutex.js';
 import { OidcUnavailableError } from '../security/oidcAuthenticator.js';
 import { createAdaptiveRateLimiterFromEnvironment } from '../security/rateLimiter.js';
 import { RateLimitStoreError } from '../security/sharedRateLimiter.js';
@@ -25,6 +30,7 @@ export function createEvidenceAwareApp({
   baseApp = createFederatedApp({ env, registry: auditRegistry, rateLimiter }),
   authenticationGateway = baseApp.authenticationGateway,
   securityTelemetry = baseApp.apiSecurity?.securityTelemetry,
+  referenceMutex = createEvidenceReferenceMutex(evidenceRegistry, env),
   evidenceHandler = createEvidenceHandler({
     registry: evidenceRegistry,
     auditRegistry,
@@ -114,14 +120,35 @@ export function createEvidenceAwareApp({
       return baseHandler(req, res);
     }
     const requestId = randomUUID();
+    let guard = null;
     try {
       const bodyBuffer = await readBody(req, 1_000_000);
       let input;
       try { input = JSON.parse(bodyBuffer.toString('utf8') || '{}'); }
       catch { return forwardBuffered(req, res, bodyBuffer); }
+      guard = referenceMutex?.acquire(`evidence:${principal.tenantId}`) ?? null;
+      guard?.assertOwned();
       evidenceRegistry.assertUsableReferences(principal.tenantId, input.evidenceRefs);
-      return forwardBuffered(req, res, bodyBuffer);
+      if (guard) {
+        const release = once(() => guard.release());
+        res.once('finish', release);
+        res.once('close', release);
+      }
+      return await forwardBuffered(req, res, bodyBuffer);
     } catch (error) {
+      guard?.release();
+      if (error instanceof SecurityControlBusyError) {
+        return sendJson(res, 423, {
+          success: false,
+          error: 'The evidence reference boundary is busy. Retry the finding request.',
+          code: 'EVIDENCE_REFERENCE_BUSY',
+          details: error.details,
+          meta: { requestId, tenantId: principal.tenantId, keyId: principal.keyId }
+        }, requestId, { 'retry-after': String(Math.max(1, Math.ceil((error.details?.retryAfterMs ?? 1000) / 1000))) });
+      }
+      if (error instanceof SecurityControlUnavailableError) {
+        return unavailable(res, requestId, error, 'EVIDENCE_STORE_UNAVAILABLE');
+      }
       if (error instanceof EvidenceValidationError || error instanceof EvidenceNotFoundError
           || error instanceof EvidenceConflictError || error instanceof EvidenceIntegrityError
           || error instanceof EvidenceStoreError) {
@@ -166,6 +193,7 @@ export function createEvidenceAwareApp({
   server.scimHandler = baseApp.scimHandler;
   server.evidenceRegistry = evidenceRegistry;
   server.evidenceHandler = evidenceHandler;
+  server.evidenceReferenceMutex = referenceMutex;
   server.auditRegistry = auditRegistry;
   return server;
 }
@@ -179,6 +207,16 @@ export function prepareEvidenceLifecycle({ app } = {}) {
   return health;
 }
 
+function createEvidenceReferenceMutex(registry, env) {
+  if (!registry?.enabled || !registry.directory) return null;
+  return createFileMutex({
+    directory: `${registry.directory}/.locks`,
+    leaseMs: integer(env.WORKFORCE_AUDIT_EVIDENCE_REFERENCE_LEASE_MS ?? 60_000, 'WORKFORCE_AUDIT_EVIDENCE_REFERENCE_LEASE_MS', 1_000, 300_000),
+    acquireTimeoutMs: integer(env.WORKFORCE_AUDIT_EVIDENCE_REFERENCE_ACQUIRE_TIMEOUT_MS ?? 2_000, 'WORKFORCE_AUDIT_EVIDENCE_REFERENCE_ACQUIRE_TIMEOUT_MS', 0, 60_000),
+    retryMs: integer(env.WORKFORCE_AUDIT_EVIDENCE_REFERENCE_RETRY_MS ?? 10, 'WORKFORCE_AUDIT_EVIDENCE_REFERENCE_RETRY_MS', 1, 1_000)
+  });
+}
+
 function evidencePolicy(method, pathname) {
   if (method === 'GET') return 'read';
   if (/\/(legal-hold|release-hold|dispose|verify)$/.test(pathname)) return 'sensitive';
@@ -190,10 +228,7 @@ async function readBody(req, maximumBytes) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > maximumBytes) {
-      const error = new EvidenceValidationError('Finding request body exceeds the 1 MB limit.', { field: 'body' });
-      throw error;
-    }
+    if (size > maximumBytes) throw new EvidenceValidationError('Finding request body exceeds the 1 MB limit.', { field: 'body' });
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
@@ -208,11 +243,9 @@ function publicHealth(value) {
   if (clone.mutex) delete clone.mutex.directory;
   return clone;
 }
-
-function applyRateDecision(res, limiter, decision) {
-  const headers = typeof limiter.headers === 'function' ? limiter.headers(decision) : {};
-  for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
-}
+function once(operation) { let completed = false; return () => { if (completed) return; completed = true; operation(); }; }
+function integer(value, field, minimum, maximum) { const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new TypeError(`${field} must be an integer from ${minimum} to ${maximum}.`); return parsed; }
+function applyRateDecision(res, limiter, decision) { const headers = typeof limiter.headers === 'function' ? limiter.headers(decision) : {}; for (const [name, value] of Object.entries(headers)) res.setHeader(name, value); }
 function rateLimited(res, requestId, decision, message) { return sendJson(res, 429, { success: false, error: message, code: 'RATE_LIMITED', details: decision, meta: { requestId } }, requestId, { 'retry-after': String(decision.retryAfterSeconds ?? 1) }); }
 function unavailable(res, requestId, error, code = null) { return sendJson(res, 503, { success: false, error: error.message, code: code ?? error.code ?? 'UNAVAILABLE', details: error.details, meta: { requestId } }, requestId, { 'retry-after': '30' }); }
 function challenge(mode) { return mode === 'api-key' ? 'ApiKey realm="workforce-audit"' : mode === 'oidc' ? 'Bearer realm="workforce-audit"' : 'Bearer realm="workforce-audit", ApiKey realm="workforce-audit"'; }
