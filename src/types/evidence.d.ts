@@ -1,5 +1,26 @@
-export type EvidenceStatus = 'active' | 'disposed';
+export type EvidenceStatus = 'active' | 'quarantine' | 'rejected' | 'disposed';
 export type EvidenceSourceType = 'uploaded' | 'system_export' | 'email' | 'interview' | 'observation' | 'external_provider';
+export type EvidenceScreeningDecision = 'clean' | 'quarantine' | 'rejected';
+export type EvidenceScreeningSeverity = 'medium' | 'high' | 'critical';
+
+export interface EvidenceScreeningFinding {
+  ruleId: string;
+  severity: EvidenceScreeningSeverity;
+  category: 'malware' | 'dlp' | 'content-validation' | 'uninspectable-container' | 'active-content';
+}
+
+export interface EvidenceScreeningSummary {
+  reportId: string;
+  engineVersion: string;
+  mode: 'disabled' | 'observe' | 'enforce';
+  decision: EvidenceScreeningDecision;
+  wouldQuarantine: boolean;
+  scannedAt: string;
+  version: number;
+  findings: EvidenceScreeningFinding[];
+  reviewedAt: string | null;
+  reviewAction: 'released' | 'rejected' | null;
+}
 
 export interface EvidenceVersion {
   version: number;
@@ -31,6 +52,7 @@ export interface EvidenceItem {
   status: EvidenceStatus;
   currentVersion: number;
   versions: EvidenceVersion[];
+  screening?: EvidenceScreeningSummary | { status: 'not-applicable' };
   legalHold: EvidenceLegalHoldSummary | null;
   disposedAt: string | null;
   disposedBy: string | null;
@@ -50,6 +72,17 @@ export interface EvidenceCustodyEvent {
   hash: string;
 }
 
+export interface EvidenceScreeningEvent {
+  eventId: string;
+  sequence: number;
+  occurredAt: string;
+  action: string;
+  evidenceId: string;
+  metadata: Record<string, unknown>;
+  previousHash: string | null;
+  hash: string;
+}
+
 export interface EvidenceIntegrityResult {
   valid: true;
   tenantId: string;
@@ -60,6 +93,32 @@ export interface EvidenceIntegrityResult {
   headSequence: number;
   headHash: string | null;
   anchorSequence: number;
+  screening?: {
+    valid: true;
+    checkedRecords: number;
+    checkedVersions: number;
+    headSequence: number;
+    headHash: string | null;
+    anchorSequence: number;
+  };
+}
+
+export interface EvidenceScreeningHealth {
+  status: 'ready' | 'unavailable' | 'disabled';
+  enabled?: boolean;
+  required?: boolean;
+  mode: 'disabled' | 'observe' | 'enforce';
+  engineVersion?: string;
+  deterministic?: boolean;
+  externalScanner?: boolean;
+  quarantined?: number;
+  rejected?: number;
+  clean?: number;
+  totalReports?: number;
+  headSequence?: number;
+  headHash?: string | null;
+  anchorSequence?: number;
+  error?: string;
 }
 
 export interface EvidenceHealth {
@@ -84,5 +143,6 @@ export interface EvidenceHealth {
   headSequence?: number;
   headHash?: string | null;
   anchorSequence?: number;
+  screening?: EvidenceScreeningHealth;
   error?: string;
 }
