@@ -23,6 +23,7 @@ import { createEvidenceScreeningEngineFromEnvironment } from './evidenceScreenin
 const FORMAT = 'basitclaw-workforce-audit-evidence-screening';
 const EVIDENCE_ID = /^EVD-[a-f0-9]{32}$/;
 const DECISIONS = new Set(['clean', 'quarantine', 'rejected']);
+const REVIEW_ACTIONS = new Set(['released', 'rejected']);
 
 export class EvidenceQuarantinedError extends EvidenceConflictError {
   constructor(evidenceId, details = {}) {
@@ -116,8 +117,7 @@ export function createScreenedEvidenceRegistry({
       const index = loadIndex(tenant);
       const record = findRecord(index, id);
       const version = currentScreening(record);
-      if (version.decision !== 'quarantine') throw new EvidenceConflictError('The current evidence version is not quarantined.', { evidenceId: id });
-      version.decision = 'clean';
+      if (effectiveDecision(version) !== 'quarantine') throw new EvidenceConflictError('The current evidence version is not quarantined.', { evidenceId: id });
       version.review = { action: 'released', reviewedAt: now().toISOString(), reviewedBy: by, reason };
       appendEvent(index, by, 'screening.quarantine_released', id, { version: version.version, reportId: version.reportId }, now, retainedEvents);
       saveIndex(tenant, index);
@@ -137,8 +137,7 @@ export function createScreenedEvidenceRegistry({
       const index = loadIndex(tenant);
       const record = findRecord(index, id);
       const version = currentScreening(record);
-      if (version.decision !== 'quarantine') throw new EvidenceConflictError('The current evidence version is not quarantined.', { evidenceId: id });
-      version.decision = 'rejected';
+      if (effectiveDecision(version) !== 'quarantine') throw new EvidenceConflictError('The current evidence version is not quarantined.', { evidenceId: id });
       version.review = { action: 'rejected', reviewedAt: now().toISOString(), reviewedBy: by, reason };
       appendEvent(index, by, 'screening.quarantine_rejected', id, { version: version.version, reportId: version.reportId }, now, retainedEvents);
       saveIndex(tenant, index);
@@ -186,12 +185,13 @@ export function createScreenedEvidenceRegistry({
     try {
       const index = loadSafe(identifier(tenantId, 'tenantId'));
       const latest = index.records.map(currentScreening);
-      const quarantined = latest.filter((entry) => entry.decision === 'quarantine').length;
-      const rejected = latest.filter((entry) => entry.decision === 'rejected').length;
+      const decisions = latest.map(effectiveDecision);
+      const quarantined = decisions.filter((decision) => decision === 'quarantine').length;
+      const rejected = decisions.filter((decision) => decision === 'rejected').length;
       return {
         ...base,
         status: base.status === 'unavailable' ? 'unavailable' : quarantined || rejected ? 'attention' : base.status,
-        screening: { status: 'ready', mode: engine.mode, quarantined, rejected, clean: latest.length - quarantined - rejected, totalReports: index.records.reduce((sum, record) => sum + record.versions.length, 0), headSequence: index.sequence, headHash: index.headHash, anchorSequence: index.anchor?.sequence ?? 0 }
+        screening: { status: 'ready', mode: engine.mode, quarantined, rejected, clean: decisions.length - quarantined - rejected, totalReports: index.records.reduce((sum, record) => sum + record.versions.length, 0), headSequence: index.sequence, headHash: index.headHash, anchorSequence: index.anchor?.sequence ?? 0 }
       };
     } catch (error) {
       return { ...base, status: engine.required ? 'unavailable' : base.status, screening: { status: 'unavailable', mode: engine.mode, error: error?.code ?? 'screening_store_unavailable' } };
@@ -206,7 +206,8 @@ export function createScreenedEvidenceRegistry({
     if (!record) throw new EvidenceScreeningStoreError('Screening metadata is missing for an evidence item.', { evidenceId: item.evidenceId });
     const version = record.versions.find((entry) => entry.version === item.currentVersion);
     if (!version) throw new EvidenceScreeningStoreError('Screening metadata is missing for the current evidence version.', { evidenceId: item.evidenceId, version: item.currentVersion });
-    return { ...item, status: version.decision === 'clean' ? item.status : version.decision, screening: publicScreening(version) };
+    const accessDecision = effectiveDecision(version);
+    return { ...item, status: accessDecision === 'clean' ? item.status : accessDecision, screening: publicScreening(version) };
   }
 
   function assertVersionAccessible(tenantId, evidenceId, versionNumber) {
@@ -215,7 +216,8 @@ export function createScreenedEvidenceRegistry({
     const record = findRecord(loadSafe(tenant), id);
     const version = record.versions.find((entry) => entry.version === Number(versionNumber));
     if (!version) throw new EvidenceScreeningStoreError('Screening metadata is missing for the requested evidence version.', { evidenceId: id, version: versionNumber });
-    if (version.decision !== 'clean') throw new EvidenceQuarantinedError(id, { version: version.version, decision: version.decision });
+    const accessDecision = effectiveDecision(version);
+    if (accessDecision !== 'clean') throw new EvidenceQuarantinedError(id, { version: version.version, decision: accessDecision });
   }
 
   function recordVersion(tenantId, evidenceId, versionNumber, report, actor, action) {
@@ -301,7 +303,7 @@ function disabledScreeningWrapper(registry, engine) {
     screeningEngine: engine,
     releaseQuarantine() { throw new EvidenceConflictError('Evidence screening is disabled.'); },
     rejectQuarantine() { throw new EvidenceConflictError('Evidence screening is disabled.'); },
-    screeningReport() { return { status: 'disabled', decision: 'clean', findings: [] }; },
+    screeningReport() { return { status: 'disabled', decision: 'clean', accessDecision: 'clean', findings: [] }; },
     screeningEvents() { return []; },
     health() { return { ...registry.health(), screening: engine.health() }; },
     tenantStatus(tenantId) { return { ...registry.tenantStatus(tenantId), screening: engine.health() }; }
@@ -311,10 +313,11 @@ function disabledScreeningWrapper(registry, engine) {
 function emptyIndex(tenantId) { return { format: FORMAT, version: 1, tenantId, createdAt: null, updatedAt: null, sequence: 0, headHash: null, anchor: null, records: [], events: [] }; }
 function findRecord(index, evidenceId) { const record = index.records.find((entry) => entry.evidenceId === evidenceId); if (!record) throw new EvidenceScreeningStoreError('Screening metadata is missing for the evidence item.', { evidenceId }); return record; }
 function currentScreening(record) { const selected = record.versions.find((entry) => entry.version === record.currentVersion); if (!selected) throw new EvidenceIntegrityError('The current evidence screening version is missing.', { evidenceId: record.evidenceId }); return selected; }
-function publicScreening(version) { return { reportId: version.reportId, engineVersion: version.engineVersion, mode: version.mode, decision: version.decision, wouldQuarantine: version.wouldQuarantine, scannedAt: version.scannedAt, version: version.version, findings: version.findings.map((finding) => ({ ...finding })), reviewedAt: version.review?.reviewedAt ?? null, reviewAction: version.review?.action ?? null }; }
+function effectiveDecision(version) { if (version.review?.action === 'released') return 'clean'; if (version.review?.action === 'rejected') return 'rejected'; return version.decision; }
+function publicScreening(version) { return { reportId: version.reportId, engineVersion: version.engineVersion, mode: version.mode, decision: version.decision, accessDecision: effectiveDecision(version), wouldQuarantine: version.wouldQuarantine, scannedAt: version.scannedAt, contentSha256: version.contentSha256, sizeBytes: version.sizeBytes, version: version.version, findings: version.findings.map((finding) => ({ ...finding })), reviewedAt: version.review?.reviewedAt ?? null, reviewAction: version.review?.action ?? null }; }
 function publicEvent(event) { return { eventId: event.eventId, sequence: event.sequence, occurredAt: event.occurredAt, action: event.action, evidenceId: event.evidenceId, metadata: structuredClone(event.metadata), previousHash: event.previousHash, hash: event.hash }; }
 function validateReport(report) { if (!report || !/^SCR-[a-f0-9]{32}$/.test(report.reportId) || !DECISIONS.has(report.decision) || !Array.isArray(report.findings)) throw new EvidenceIntegrityError('The evidence screening report is invalid.'); }
-function validateVersion(version, evidenceId) { if (!Number.isInteger(version.version) || version.version < 1 || !DECISIONS.has(version.decision) || !/^SCR-[a-f0-9]{32}$/.test(version.reportId) || !Array.isArray(version.findings)) throw new EvidenceIntegrityError('Stored evidence screening metadata is invalid.', { evidenceId, version: version.version }); }
+function validateVersion(version, evidenceId) { if (!Number.isInteger(version.version) || version.version < 1 || !DECISIONS.has(version.decision) || !/^SCR-[a-f0-9]{32}$/.test(version.reportId) || !Array.isArray(version.findings) || (version.review && (!REVIEW_ACTIONS.has(version.review.action) || typeof version.review.reviewedAt !== 'string'))) throw new EvidenceIntegrityError('Stored evidence screening metadata is invalid.', { evidenceId, version: version.version }); }
 function appendEvent(index, actor, action, evidenceId, metadata, now, retainedEvents) { const event = { eventId: `SEV-${randomUUID()}`, sequence: index.sequence + 1, occurredAt: now().toISOString(), actor, action, evidenceId, metadata, previousHash: index.headHash }; event.hash = eventHash(event); if (!index.sequence) index.createdAt = event.occurredAt; index.events.push(event); index.sequence = event.sequence; index.headHash = event.hash; index.updatedAt = event.occurredAt; if (index.events.length > retainedEvents) { const removed = index.events.splice(0, index.events.length - retainedEvents); const tail = removed.at(-1); index.anchor = { sequence: tail.sequence, hash: tail.hash, createdAt: event.occurredAt }; } }
 function verifyChain(index) { let previous = index.anchor?.hash ?? null; let sequence = (index.anchor?.sequence ?? 0) + 1; for (const event of index.events) { if (event.sequence !== sequence || event.previousHash !== previous || event.hash !== eventHash(event)) throw new EvidenceIntegrityError('The evidence screening event chain is invalid.', { failedEventId: event.eventId, expectedSequence: sequence }); previous = event.hash; sequence += 1; } if (index.sequence !== sequence - 1 || index.headHash !== previous) throw new EvidenceIntegrityError('The evidence screening chain head is inconsistent.', { sequence: index.sequence }); }
 function eventHash(event) { return sha256(Buffer.from(JSON.stringify({ eventId: event.eventId, sequence: event.sequence, occurredAt: event.occurredAt, actor: event.actor, action: event.action, evidenceId: event.evidenceId, metadata: event.metadata, previousHash: event.previousHash }))); }
