@@ -22,8 +22,9 @@ async function markers(path, expected) {
   }
 }
 
+await markers('src/evidence/evidenceCrypto.js', ['aes-256-gcm', 'setAAD', 'fsyncSync', 'parseEvidenceKeyring']);
 await markers('src/evidence/evidenceRegistry.js', [
-  'aes-256-gcm', 'EVIDENCE_INTEGRITY_FAILED', 'assertUsableReferences',
+  'EVIDENCE_INTEGRITY_FAILED', 'assertUsableReferences',
   'evidence.disposition_committed', 'purgePending', 'RELEASE HOLD', 'DISPOSE'
 ]);
 await markers('src/evidence/evidenceHandler.js', [
