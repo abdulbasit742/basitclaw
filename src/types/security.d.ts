@@ -1,4 +1,5 @@
 export type ApiCredentialStatus = 'active' | 'retiring' | 'revoked';
+export type AuthenticationMode = 'api-key' | 'oidc' | 'hybrid';
 export type RateLimitPolicyName = 'burst' | 'authFailure' | 'read' | 'write' | 'sensitive';
 export type SecurityEventSeverity = 'info' | 'warning' | 'high' | 'critical';
 export type SecurityAlertDeliveryState = 'pending' | 'inflight' | 'delivered' | 'dead-letter';
@@ -16,8 +17,8 @@ export interface HashedApiCredentialRecord {
   expiresAt?: string;
 }
 
-export interface CredentialHealth {
-  status: 'ready' | 'unavailable';
+export interface ApiKeyCredentialHealth {
+  status: 'ready' | 'unavailable' | 'disabled';
   generatedAt: string;
   total: number;
   usable: number;
@@ -30,6 +31,31 @@ export interface CredentialHealth {
   rotationRequired: number;
   rotationWarningDays: number;
   nextExpiryAt: string | null;
+}
+
+export interface OidcHealth {
+  status: 'ready' | 'unavailable' | 'disabled';
+  enabled: boolean;
+  mode: 'oidc-jwks-bearer' | 'disabled';
+  issuerOrigin?: string;
+  audienceCount?: number;
+  allowedAlgorithms?: Array<'RS256' | 'ES256'>;
+  cachedKeys?: number;
+  cacheState?: 'cold' | 'fresh' | 'stale' | 'static' | 'disabled';
+  fetchedAt?: string | null;
+  expiresAt?: string | null;
+  staleUntil?: string | null;
+  allowedTenants?: number;
+  mappedGroups?: number;
+  requiredAcrCount?: number;
+  requiredAmrCount?: number;
+  lastError?: string | null;
+}
+
+export interface CredentialHealth extends ApiKeyCredentialHealth {
+  authenticationMode?: AuthenticationMode;
+  apiKeys?: ApiKeyCredentialHealth;
+  oidc?: OidcHealth;
 }
 
 export interface RateLimitPolicy { limit: number; windowMs: number; }
