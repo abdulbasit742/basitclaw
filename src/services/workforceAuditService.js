@@ -25,7 +25,8 @@ export class NotFoundError extends Error {
   }
 }
 
-export function createWorkforceAuditService({ now = () => new Date() } = {}) {
+export function createWorkforceAuditService({ now = () => new Date(), tenantId = 'tenant-demo', ledger = null } = {}) {
+  validateTenantId(tenantId);
   const engagements = structuredClone(seededEngagements);
   const findings = structuredClone(seededFindings);
 
@@ -58,12 +59,9 @@ export function createWorkforceAuditService({ now = () => new Date() } = {}) {
       .filter((placeholder) => daysUntil(placeholder.expiresAt, now()) <= 14);
 
     return {
+      tenantId,
       generatedAt: now().toISOString(),
-      universe: {
-        total: universe.length,
-        ready: readyUniverse,
-        attentionRequired: universe.length - readyUniverse
-      },
+      universe: { total: universe.length, ready: readyUniverse, attentionRequired: universe.length - readyUniverse },
       engagements: {
         total: engagements.length,
         active: engagements.filter((item) => ['planned', 'fieldwork', 'reporting'].includes(item.status)).length
@@ -73,22 +71,14 @@ export function createWorkforceAuditService({ now = () => new Date() } = {}) {
         criticalOrHigh: findings.filter((item) => ['critical', 'high'].includes(item.severity) && !CLOSED_STATUSES.has(item.status)).length,
         awaitingManagementResponse: findings.filter((item) => item.managementResponseRequired && item.status !== 'closed').length
       },
-      providers: {
-        total: providers.length,
-        ready: readyProviders,
-        blocked: providers.length - readyProviders
-      },
-      fieldworkPlaceholders: {
-        expiringWithin14Days: expiringPlaceholders.length
-      }
+      providers: { total: providers.length, ready: readyProviders, blocked: providers.length - readyProviders },
+      fieldworkPlaceholders: { expiringWithin14Days: expiringPlaceholders.length }
     };
   }
 
-  function createEngagement(input) {
+  function createEngagement(input, context = {}) {
     assertObject(input, 'engagement');
-    const required = ['universeItemId', 'objective', 'scope', 'leadAuditor', 'startDate', 'endDate'];
-    assertRequired(input, required);
-
+    assertRequired(input, ['universeItemId', 'objective', 'scope', 'leadAuditor', 'startDate', 'endDate']);
     if (!auditUniverse.some((item) => item.id === input.universeItemId)) {
       throw new ValidationError('The selected audit-universe item does not exist.', { field: 'universeItemId' });
     }
@@ -97,25 +87,14 @@ export function createWorkforceAuditService({ now = () => new Date() } = {}) {
     }
     const startDate = parseDate(input.startDate, 'startDate');
     const endDate = parseDate(input.endDate, 'endDate');
-    if (endDate <= startDate) {
-      throw new ValidationError('Engagement endDate must be after startDate.', { field: 'endDate' });
-    }
+    if (endDate <= startDate) throw new ValidationError('Engagement endDate must be after startDate.', { field: 'endDate' });
     if (input.managementApproved !== true) {
-      throw new ValidationError('Management approval is required before an engagement can enter the plan.', {
-        field: 'managementApproved'
-      });
+      throw new ValidationError('Management approval is required before an engagement can enter the plan.', { field: 'managementApproved' });
     }
 
-    const overlap = engagements.find((item) =>
-      item.universeItemId === input.universeItemId &&
-      new Date(item.startDate) <= endDate &&
-      new Date(item.endDate) >= startDate &&
-      item.status !== 'cancelled'
-    );
+    const overlap = engagements.find((item) => item.universeItemId === input.universeItemId && new Date(item.startDate) <= endDate && new Date(item.endDate) >= startDate && item.status !== 'cancelled');
     if (overlap) {
-      throw new ValidationError('An overlapping engagement already exists for this audit-universe item.', {
-        conflictingEngagementId: overlap.id
-      });
+      throw new ValidationError('An overlapping engagement already exists for this audit-universe item.', { conflictingEngagementId: overlap.id });
     }
 
     const engagement = {
@@ -132,18 +111,21 @@ export function createWorkforceAuditService({ now = () => new Date() } = {}) {
       fieldworkPlaceholders: []
     };
     engagements.push(engagement);
+    recordGovernance('engagement.created', 'engagement', engagement.id, context, {
+      universeItemId: engagement.universeItemId,
+      startDate: engagement.startDate,
+      endDate: engagement.endDate
+    });
     return structuredClone(engagement);
   }
 
-  function addFieldworkPlaceholder(engagementId, input) {
+  function addFieldworkPlaceholder(engagementId, input, context = {}) {
     const engagement = engagements.find((item) => item.id === engagementId);
     if (!engagement) throw new NotFoundError('Audit engagement was not found.');
     assertObject(input, 'fieldwork placeholder');
     assertRequired(input, ['title', 'reason', 'owner', 'expiresAt']);
     const expiresAt = parseDate(input.expiresAt, 'expiresAt');
-    if (expiresAt <= now()) {
-      throw new ValidationError('A fieldwork placeholder must expire in the future.', { field: 'expiresAt' });
-    }
+    if (expiresAt <= now()) throw new ValidationError('A fieldwork placeholder must expire in the future.', { field: 'expiresAt' });
     if (daysUntil(input.expiresAt, now()) > 60) {
       throw new ValidationError('A fieldwork placeholder cannot remain open for more than 60 days.', { field: 'expiresAt' });
     }
@@ -159,10 +141,15 @@ export function createWorkforceAuditService({ now = () => new Date() } = {}) {
     };
     engagement.fieldworkPlaceholders ??= [];
     engagement.fieldworkPlaceholders.push(placeholder);
+    recordGovernance('fieldwork.placeholder.created', 'fieldwork_placeholder', placeholder.id, context, {
+      engagementId,
+      expiresAt: placeholder.expiresAt,
+      replacementEvidenceRequired: true
+    });
     return structuredClone(placeholder);
   }
 
-  function createFinding(input) {
+  function createFinding(input, context = {}) {
     assertObject(input, 'finding');
     assertRequired(input, ['engagementId', 'title', 'severity', 'owner', 'dueDate', 'evidenceRefs']);
     if (!engagements.some((item) => item.id === input.engagementId)) {
@@ -191,19 +178,28 @@ export function createWorkforceAuditService({ now = () => new Date() } = {}) {
     };
     parseDate(finding.dueDate, 'dueDate');
     findings.push(finding);
+    recordGovernance('finding.created', 'finding', finding.id, context, {
+      engagementId: finding.engagementId,
+      severity: finding.severity,
+      dueDate: finding.dueDate,
+      evidenceCount: finding.evidenceRefs.length
+    });
     return structuredClone(finding);
   }
 
-  return {
-    getOverview,
-    getUniverse,
-    getEngagements,
-    getFindings,
-    getProviders,
-    createEngagement,
-    addFieldworkPlaceholder,
-    createFinding
-  };
+  function recordGovernance(action, entityType, entityId, context, metadata) {
+    if (!ledger) return null;
+    return ledger.append({
+      tenantId,
+      actor: safeActor(context.actor),
+      action,
+      entityType,
+      entityId,
+      metadata
+    });
+  }
+
+  return { getOverview, getUniverse, getEngagements, getFindings, getProviders, createEngagement, addFieldworkPlaceholder, createFinding };
 }
 
 export function calculateUniverseReadiness(item) {
@@ -224,9 +220,7 @@ export function assessProviderReadiness(provider, now = new Date()) {
 }
 
 function assertObject(value, label) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new ValidationError(`A valid ${label} object is required.`);
-  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ValidationError(`A valid ${label} object is required.`);
 }
 
 function assertRequired(input, fields) {
@@ -236,6 +230,15 @@ function assertRequired(input, fields) {
 
 function cleanText(value) {
   return String(value).trim().replace(/[<>]/g, '');
+}
+
+function safeActor(value) {
+  const actor = String(value ?? 'system').trim();
+  return /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,191}$/.test(actor) ? actor : 'system';
+}
+
+function validateTenantId(value) {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,127}$/.test(String(value ?? ''))) throw new TypeError('tenantId must be a safe identifier.');
 }
 
 function parseDate(value, field) {

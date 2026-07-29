@@ -1,5 +1,13 @@
 export type RiskTier = 'low' | 'medium' | 'high' | 'critical';
 export type FindingStatus = 'draft' | 'open' | 'management-response' | 'verified' | 'closed';
+export type AuditRole = 'audit_viewer' | 'auditor' | 'audit_manager' | 'compliance_admin';
+
+export interface AuditPrincipal {
+  subject: string;
+  tenantId: string;
+  role: AuditRole;
+  permissions: string[];
+}
 
 export interface AuditUniverseItem {
   id: string;
@@ -47,4 +55,18 @@ export interface AuditFinding {
   evidenceRefs: string[];
   managementResponseRequired: boolean;
   status: FindingStatus;
+}
+
+export interface GovernanceEvent {
+  id: string;
+  sequence: number;
+  tenantId: string;
+  actor: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  occurredAt: string;
+  metadata: Record<string, unknown>;
+  previousHash: string | null;
+  hash: string;
 }

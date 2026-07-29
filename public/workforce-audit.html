@@ -6,15 +6,21 @@
   <title>Workforce Audit Assurance</title>
   <style>
     :root { color-scheme: light; font-family: Inter, system-ui, sans-serif; background: #f5f7fb; color: #182230; }
+    * { box-sizing: border-box; }
     body { margin: 0; }
     header { padding: 28px clamp(20px, 5vw, 72px); background: #102a43; color: white; }
     header p { max-width: 760px; color: #d9e2ec; }
     main { padding: 24px clamp(20px, 5vw, 72px) 60px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; }
-    .card, section { background: white; border: 1px solid #d9e2ec; border-radius: 14px; box-shadow: 0 8px 22px rgba(16,42,67,.06); }
-    .card { padding: 18px; }
+    .auth, .grid { display: grid; gap: 16px; }
+    .auth { grid-template-columns: minmax(220px, 1fr) auto; align-items: end; margin-bottom: 20px; }
+    .grid { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+    .card, section, .auth { background: white; border: 1px solid #d9e2ec; border-radius: 14px; box-shadow: 0 8px 22px rgba(16,42,67,.06); }
+    .auth, .card, section { padding: 18px; }
+    label { display: grid; gap: 7px; font-weight: 650; }
+    input, button { font: inherit; padding: 10px 12px; border-radius: 9px; border: 1px solid #9fb3c8; }
+    button { background: #176b45; color: white; border: 0; cursor: pointer; font-weight: 700; }
     .metric { font-size: 2rem; font-weight: 750; margin: 6px 0; }
-    section { margin-top: 22px; padding: 18px; overflow-x: auto; }
+    section { margin-top: 22px; overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; min-width: 700px; }
     th, td { padding: 12px; border-bottom: 1px solid #e6edf3; text-align: left; }
     th { color: #486581; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
@@ -22,14 +28,20 @@
     .blocked, .attention { background: #fff1f0; color: #9b2c2c; }
     .muted { color: #627d98; }
     #error { color: #9b2c2c; margin-top: 16px; }
+    @media (max-width: 620px) { .auth { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
 <header>
   <h1>Workforce Audit Assurance</h1>
-  <p>Audit-universe readiness, engagement boundaries, fieldwork placeholder control, finding traceability, and external provider readiness in one review surface.</p>
+  <p>Tenant-isolated audit readiness, governed fieldwork, finding traceability, provider assurance, and immutable change history.</p>
 </header>
 <main>
+  <form id="auth" class="auth">
+    <label>API key<input id="apiKey" type="password" autocomplete="current-password" placeholder="Enter your workforce-audit API key" required></label>
+    <button type="submit">Load assurance workspace</button>
+  </form>
+  <p id="identity" class="muted"></p>
   <div id="metrics" class="grid" aria-live="polite"></div>
   <div id="error" role="alert"></div>
   <section>
@@ -47,14 +59,25 @@
 </main>
 <script>
   const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+  const apiKeyInput = document.querySelector('#apiKey');
+  apiKeyInput.value = sessionStorage.getItem('workforceAuditApiKey') || '';
+  document.querySelector('#auth').addEventListener('submit', (event) => {
+    event.preventDefault();
+    sessionStorage.setItem('workforceAuditApiKey', apiKeyInput.value);
+    load();
+  });
+
   async function load() {
+    document.querySelector('#error').textContent = '';
     try {
-      const [overview, universe, engagements, providers] = await Promise.all([
-        fetch('/api/workforce-audit/overview').then(read),
-        fetch('/api/workforce-audit/universe').then(read),
-        fetch('/api/workforce-audit/engagements').then(read),
-        fetch('/api/workforce-audit/providers').then(read)
+      const [session, overview, universe, engagements, providers] = await Promise.all([
+        secureFetch('/api/workforce-audit/session'),
+        secureFetch('/api/workforce-audit/overview'),
+        secureFetch('/api/workforce-audit/universe'),
+        secureFetch('/api/workforce-audit/engagements'),
+        secureFetch('/api/workforce-audit/providers')
       ]);
+      document.querySelector('#identity').textContent = `${session.subject} · ${session.role} · ${session.tenantId}`;
       const cards = [
         ['Audit areas ready', `${overview.universe.ready}/${overview.universe.total}`],
         ['Active engagements', overview.engagements.active],
@@ -69,12 +92,17 @@
       document.querySelector('#error').textContent = `Unable to load audit data: ${error.message}`;
     }
   }
-  async function read(response) {
+
+  async function secureFetch(path) {
+    const apiKey = apiKeyInput.value.trim();
+    if (!apiKey) throw new Error('Enter an API key.');
+    const response = await fetch(path, { headers: { 'x-api-key': apiKey } });
     const payload = await response.json();
     if (!response.ok || !payload.success) throw new Error(payload.error || 'Request failed');
     return payload.data;
   }
-  load();
+
+  if (apiKeyInput.value) load();
 </script>
 </body>
 </html>
