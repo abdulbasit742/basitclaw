@@ -15,16 +15,18 @@ const principal = Object.freeze({
   permissions: ['audit:read', 'finding:write', 'governance:read', 'backup:restore']
 });
 
-function fixture() {
+function fixture({ screened = true } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'screening-http-'));
   const baseRegistry = createEvidenceRegistry({ directory, keys: { k1: key }, primaryKeyId: 'k1' });
-  const evidenceRegistry = createScreenedEvidenceRegistry({
-    registry: baseRegistry,
-    engine: createEvidenceScreeningEngine({ mode: 'enforce' }),
-    keys: { k1: key },
-    primaryKeyId: 'k1',
-    eventRetention: 100
-  });
+  const evidenceRegistry = screened
+    ? createScreenedEvidenceRegistry({
+      registry: baseRegistry,
+      engine: createEvidenceScreeningEngine({ mode: 'enforce' }),
+      keys: { k1: key },
+      primaryKeyId: 'k1',
+      eventRetention: 100
+    })
+    : baseRegistry;
   const findings = [];
   const auditRegistry = { forTenant: () => ({ getFindings: () => structuredClone(findings) }) };
   const gateway = {
@@ -128,4 +130,20 @@ test('screening event route is read-only', async (t) => {
   });
   assert.equal(response.status, 404);
   assert.equal((await payload(response)).code, 'NOT_FOUND');
+});
+
+test('plain evidence registries return not found for unsupported screening routes', async (t) => {
+  const { app } = fixture({ screened: false });
+  t.after(() => app.close());
+  const base = await listen(app);
+  const report = await fetch(`${base}/api/workforce-audit/evidence/EVD-00000000000000000000000000000000/screening`, {
+    headers: { 'x-api-key': 'test' }
+  });
+  assert.equal(report.status, 404);
+  assert.equal((await payload(report)).code, 'NOT_FOUND');
+  const release = await fetch(`${base}/api/workforce-audit/evidence/EVD-00000000000000000000000000000000/screening/release`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'test' }, body: '{}'
+  });
+  assert.equal(release.status, 404);
+  assert.equal((await payload(release)).code, 'NOT_FOUND');
 });
