@@ -103,6 +103,7 @@ export interface PrivilegedAccessRequest {
   closedAt: string | null;
   postReviewBy: string | null;
   postReview: null | { reviewer: string; reviewedAt: string; outcome: 'accepted' | 'concern'; reason: string };
+  denial: null | { subject: string; deniedAt: string; reason: string };
   version: number;
 }
 
