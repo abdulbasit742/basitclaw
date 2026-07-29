@@ -9,6 +9,7 @@ const requiredFiles = [
   'test/externalScanAttestationRegistry.test.js',
   'test/externalScanHttp.test.js',
   'test/externalScanPolicyLock.test.js',
+  'test/externalScanHardening.test.js',
   'docs/external-scanner-attestations.md',
   'config/evidence-screening.production.env.example'
 ];
@@ -29,7 +30,9 @@ await requireMarkers('src/evidence/externalScanAttestationRegistry.js', 'Externa
   'encryptEvidenceJson',
   'contentSha256',
   'requiredForRelease',
-  'recordHash'
+  'recordHash',
+  'ATTESTATION_FIELDS',
+  'compareAttestationRecency'
 ]);
 await requireMarkers('src/evidence/externalScanEvidenceRegistry.js', 'External scan release gate', [
   'external_verdict_not_clean',
@@ -38,7 +41,9 @@ await requireMarkers('src/evidence/externalScanEvidenceRegistry.js', 'External s
   'externalScanAttestations',
   'externalScanStatus',
   'external-scan-release-policy',
-  '.external-scan-policy-locks'
+  '.external-scan-policy-locks',
+  "externalScan.mode === 'enforce'",
+  'external-scanner-disabled'
 ]);
 await requireMarkers('src/evidence/externalScanCallbackHandler.js', 'External scan callback', [
   '/api/workforce-audit/external-scanner/attestations',
@@ -51,7 +56,9 @@ await requireMarkers('src/evidence/externalScanCallbackHandler.js', 'External sc
 await requireMarkers('src/evidence/externalScanManagementHandler.js', 'External scan management API', [
   '/api/workforce-audit/external-scanner/status',
   '/external-scans',
-  'governance:read'
+  'governance:read',
+  'authFailure',
+  'external-scan-management'
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'External scan runtime', [
   'createExternalScanAwareApp'
