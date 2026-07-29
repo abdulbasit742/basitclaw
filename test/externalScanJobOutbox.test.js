@@ -7,7 +7,7 @@ import {
   generateKeyPairSync,
   privateDecrypt
 } from 'node:crypto';
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha256 } from '../src/evidence/evidenceCrypto.js';
@@ -104,7 +104,7 @@ function filesUnder(directory) {
   return files;
 }
 
-test('queues no plaintext and scanner can decrypt only with its RSA private key', () => {
+test('queues encrypted records and scanner can decrypt only with its RSA private key', () => {
   const directory = mkdtempSync(join(tmpdir(), 'scan-jobs-sealed-'));
   const outbox = createOutbox({ directory });
   const content = contentRecord();
@@ -116,6 +116,8 @@ test('queues no plaintext and scanner can decrypt only with its RSA private key'
   assert.equal(raw.includes(content.content.toString()), false);
   assert.equal(raw.includes(content.evidenceId), false);
   assert.equal(raw.includes(content.filename), false);
+  assert.equal(raw.includes('managed-av'), false);
+  assert.equal(raw.includes('"state"'), false);
 
   const claim = signedBody({ limit: 1 });
   const claimed = outbox.claimSigned(claim.bytes, claim.headers);
@@ -160,16 +162,18 @@ test('matching signed attestation completes the deterministic delivery job and r
   assert.equal(completed.matched, true);
   assert.equal(completed.job.jobId, queued.job.jobId);
   assert.equal(completed.job.state, 'completed');
-  const recordPath = filesUnder(join(directory, 'completed')).find((path) => path.endsWith('.json'));
-  const record = JSON.parse(readFileSync(recordPath, 'utf8'));
-  assert.equal(record.package, null);
+  assert.equal(outbox.list('tenant-a')[0].state, 'completed');
+  const encryptedRecord = readFileSync(filesUnder(join(directory, 'completed')).find((path) => path.endsWith('.json')), 'utf8');
+  assert.equal(encryptedRecord.includes('"package"'), false);
+  assert.equal(encryptedRecord.includes('completed'), false);
   assert.equal(outbox.verify('tenant-a').valid, true);
 });
 
-test('permanent scanner failures dead-letter the job and degrade required delivery health', () => {
+test('permanent scanner failures dead-letter and a governed repeat queue reseals the job', () => {
   const directory = mkdtempSync(join(tmpdir(), 'scan-jobs-dead-'));
   const outbox = createOutbox({ directory });
-  outbox.queue(contentRecord(), 'managed-av', { actor: 'audit.manager' });
+  const content = contentRecord();
+  outbox.queue(content, 'managed-av', { actor: 'audit.manager' });
   const claimRequest = signedBody({ limit: 1 }, { nonce: 'nonce-0000000000000020' });
   const claimed = outbox.claimSigned(claimRequest.bytes, claimRequest.headers).jobs[0];
   const failRequest = signedBody({ claimToken: claimed.claimToken, retryable: false, reasonCode: 'decrypt_failed' }, { nonce: 'nonce-0000000000000021' });
@@ -177,6 +181,38 @@ test('permanent scanner failures dead-letter the job and degrade required delive
   assert.equal(failed.state, 'dead-letter');
   assert.equal(outbox.health().status, 'degraded');
   assert.equal(outbox.tenantStatus('tenant-a').deadLetters, 1);
+
+  const requeued = outbox.queue(content, 'managed-av', { actor: 'audit.manager' });
+  assert.equal(requeued.requeued, true);
+  assert.equal(requeued.job.state, 'pending');
+  assert.equal(outbox.health().status, 'ready');
+});
+
+test('expired claims are recovered and cannot be acknowledged with the old token', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'scan-jobs-expired-'));
+  let clock = new Date(currentIso);
+  const outbox = createOutbox({ directory, now: () => new Date(clock) });
+  outbox.queue(contentRecord(), 'managed-av', { actor: 'audit.manager' });
+  const claimRequest = signedBody({ limit: 1 }, { nonce: 'nonce-0000000000000030' });
+  const claimed = outbox.claimSigned(claimRequest.bytes, claimRequest.headers).jobs[0];
+  clock = new Date(clock.getTime() + 11_000);
+  const ack = signedBody({ claimToken: claimed.claimToken }, { nonce: 'nonce-0000000000000031' });
+  assert.throws(() => outbox.acknowledgeSigned(claimed.jobId, ack.bytes, ack.headers), /not found or is no longer claimable/);
+  assert.equal(outbox.list('tenant-a')[0].state, 'pending');
+});
+
+test('crash-interrupted directory moves are reconciled from encrypted record state', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'scan-jobs-reconcile-'));
+  const outbox = createOutbox({ directory });
+  const queued = outbox.queue(contentRecord(), 'managed-av', { actor: 'audit.manager' });
+  const filename = `${queued.job.jobId}.json`;
+  const pending = join(directory, 'pending', filename);
+  const misplaced = join(directory, 'inflight', filename);
+  renameSync(pending, misplaced);
+  assert.equal(existsSync(misplaced), true);
+  assert.equal(outbox.list('tenant-a')[0].state, 'pending');
+  assert.equal(existsSync(pending), true);
+  assert.equal(existsSync(misplaced), false);
 });
 
 test('multiple outbox instances keep job lookup isolated by directory', () => {
