@@ -8,6 +8,7 @@ import {
   CoordinationLostError,
   createFileLeaseCoordinator
 } from '../src/coordination/fileLeaseCoordinator.js';
+import { hashTenantIdentifier } from '../src/persistence/encryptedSnapshotStore.js';
 
 function setup(t) {
   const directory = mkdtempSync(join(tmpdir(), 'basitclaw-lease-'));
@@ -39,6 +40,23 @@ test('expired leases are taken over and stale handles lose authority', (t) => {
   const leaseB = second.acquire('tenant-a');
   assert.equal(leaseB.fencingToken, 2);
   assert.throws(() => leaseA.assertValid(), CoordinationLostError);
+  assert.equal(leaseA.release(), false);
+  leaseB.release();
+});
+
+test('ownerless lease directories become recoverable after the grace period', (t) => {
+  const directory = setup(t);
+  let current = new Date();
+  const now = () => new Date(current);
+  const first = createFileLeaseCoordinator({ directory, ownerId: 'instance-a', leaseMs: 1000, acquireTimeoutMs: 0, now });
+  const second = createFileLeaseCoordinator({ directory, ownerId: 'instance-b', leaseMs: 1000, acquireTimeoutMs: 0, now });
+  const leaseA = first.acquire('tenant-orphan');
+  const ownerPath = join(directory, `${hashTenantIdentifier('tenant-orphan')}.lease`, 'owner.json');
+  rmSync(ownerPath, { force: true });
+  assert.throws(() => second.acquire('tenant-orphan'), CoordinationBusyError);
+  current = new Date(current.getTime() + 2000);
+  const leaseB = second.acquire('tenant-orphan');
+  assert.equal(leaseB.fencingToken, 2);
   assert.equal(leaseA.release(), false);
   leaseB.release();
 });
