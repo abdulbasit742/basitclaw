@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { createRuntimeWorkforceAuditRegistry } from './coordination/coordinatedRegistry.js';
 import { createApp } from './server.js';
 import { AuthenticationError, AuthorizationError } from './security/accessControl.js';
-import { createAuthenticationGatewayFromEnvironment } from './security/authenticationGateway.js';
+import {
+  createAuthenticationGatewayFromEnvironment
+} from './security/authenticationGateway.js';
 import { OidcUnavailableError } from './security/oidcAuthenticator.js';
 import { createAdaptiveRateLimiterFromEnvironment } from './security/rateLimiter.js';
 import { RateLimitStoreError } from './security/sharedRateLimiter.js';
@@ -140,7 +142,8 @@ function createTrustedAccessController(gateway, authenticatedRequests) {
       if (gateway.mode === 'oidc') {
         throw new AuthenticationError('A valid OIDC bearer token is required.', { code: 'OIDC_UNAUTHENTICATED' });
       }
-      return gateway.apiKeyController.authenticate(req);
+      const apiPrincipal = gateway.apiKeyController.authenticate(req);
+      return Object.freeze({ ...apiPrincipal, authMethod: apiPrincipal.authMethod ?? 'api_key' });
     },
     authorise: (principal, permission) => gateway.authorise(principal, permission),
     tenantIds: () => gateway.tenantIds(),
