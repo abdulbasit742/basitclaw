@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { permissionsForRole } from '../src/security/accessControl.js';
+import { createPrivilegedAccessAdapter } from '../src/security/privilegedAccessAdapter.js';
 import {
   PrivilegedAccessStoreError,
   createPrivilegedAccessRegistry
@@ -163,4 +164,26 @@ test('observe mode reports missing grants without denying the request', async ()
   const observed = registry.authorise(principal('observer'), 'security:read');
   assert.equal(observed.privilegedAccess.status, 'observed');
   assert.equal(observed.privilegedAccess.enforced, false);
+});
+
+test('observe adapter does not block protected operations when its encrypted store is unavailable', () => {
+  const adapter = createPrivilegedAccessAdapter({
+    mode: 'observe',
+    authorise() { throw new PrivilegedAccessStoreError(); }
+  });
+  const observed = adapter.authorise(principal('observer'), 'security:read');
+  assert.equal(observed.privilegedAccess.status, 'observed');
+  assert.equal(observed.privilegedAccess.reason, 'PRIVILEGED_ACCESS_STORE_UNAVAILABLE');
+});
+
+test('adapter classifies malformed privileged principals as client input errors', async () => {
+  const { registry } = await setup();
+  const adapter = createPrivilegedAccessAdapter(registry);
+  const malformed = { ...principal('valid'), role: 'unknown-role' };
+  assert.throws(() => adapter.requestAccess(malformed, {
+    permissions: ['security:read'],
+    durationMinutes: 15,
+    reason: 'Malformed roles must not be classified as storage outages.',
+    ticketRef: 'CASE-45'
+  }), (error) => error.code === 'PRIVILEGED_ACCESS_INPUT_INVALID' && error.statusCode === 400);
 });
