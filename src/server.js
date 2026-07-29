@@ -16,6 +16,12 @@ import {
   classifyRequest,
   createAdaptiveRateLimiterFromEnvironment
 } from './security/rateLimiter.js';
+import { RateLimitStoreError } from './security/sharedRateLimiter.js';
+import {
+  SecurityArchiveError,
+  SecurityArchiveIntegrityError,
+  createSecurityEventArchiveFromEnvironment
+} from './security/securityEventArchive.js';
 import { createSecurityTelemetryFromEnvironment } from './security/securityTelemetry.js';
 import {
   BackupError,
@@ -35,7 +41,8 @@ export function createApp({
   accessController = createAccessController(),
   resilienceScheduler = null,
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(),
-  securityTelemetry = createSecurityTelemetryFromEnvironment()
+  securityArchive = createSecurityEventArchiveFromEnvironment(),
+  securityTelemetry = createSecurityTelemetryFromEnvironment(process.env, { archive: securityArchive })
 } = {}) {
   const scheduler = resilienceScheduler ?? createResilienceSchedulerFromEnvironment({
     registry,
@@ -53,16 +60,22 @@ export function createApp({
         const credentials = typeof accessController.credentialHealth === 'function'
           ? accessController.credentialHealth()
           : { status: 'ready', total: accessController.principalCount ?? null, usable: accessController.principalCount ?? null };
+        const rateLimiting = rateLimiter.health();
+        const telemetry = securityTelemetry.summary();
         const replicaRequiredFailure = persistence.replicas?.required
           && (persistence.replicas.status !== 'ready' || persistence.replicas.readiness !== 'ready');
         const coordinationFailure = persistence.coordination?.enabled
           && persistence.coordination.status !== 'ready';
         const credentialFailure = credentials.status !== 'ready';
+        const rateLimitFailure = rateLimiting.enabled && !['ready', 'disabled'].includes(rateLimiting.status);
+        const archiveFailure = telemetry.archive?.required && telemetry.archive.status !== 'ready';
         const status = persistence.status === 'ready'
           && persistence.backups?.status === 'ready'
           && !replicaRequiredFailure
           && !coordinationFailure
           && !credentialFailure
+          && !rateLimitFailure
+          && !archiveFailure
           ? 200
           : 503;
         return sendJson(res, status, {
@@ -71,11 +84,7 @@ export function createApp({
             status: status === 200 ? 'ok' : 'degraded',
             persistence,
             scheduler: scheduler.status(),
-            apiSecurity: {
-              credentials,
-              rateLimiting: rateLimiter.health(),
-              telemetry: securityTelemetry.summary()
-            }
+            apiSecurity: publicSecurityHealth({ credentials, rateLimiting, telemetry })
           },
           meta: { requestId }
         }, requestId);
@@ -164,9 +173,29 @@ export function createApp({
             type: url.searchParams.get('type'),
             severity: url.searchParams.get('severity')
           }),
-          integrity: securityTelemetry.verify()
+          integrity: securityTelemetry.verify(),
+          archive: {
+            health: securityTelemetry.summary().archive,
+            integrity: securityTelemetry.verifyArchive()
+          }
         };
         return sendJson(res, 200, { success: true, data, meta }, requestId);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/workforce-audit/security-archive-events') {
+        accessController.authorise(principal, 'security:read');
+        const limit = parsePositiveInteger(url.searchParams.get('limit'), 100, 500);
+        const afterSequence = parseNonNegativeInteger(url.searchParams.get('afterSequence'), 0);
+        const data = securityTelemetry.listArchived({
+          limit,
+          afterSequence,
+          type: url.searchParams.get('type'),
+          severity: url.searchParams.get('severity')
+        });
+        return sendJson(res, 200, { success: true, data, meta }, requestId);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/workforce-audit/security-archive-integrity') {
+        accessController.authorise(principal, 'security:read');
+        return sendJson(res, 200, { success: true, data: securityTelemetry.verifyArchive(), meta }, requestId);
       }
       if (req.method === 'GET' && url.pathname === '/api/workforce-audit/overview') {
         accessController.authorise(principal, 'audit:read');
@@ -333,6 +362,15 @@ export function createApp({
           'retry-after': String(error.details?.retryAfterSeconds ?? 1)
         });
       }
+      if (error instanceof RateLimitStoreError) {
+        safeRecordSecurityEvent(securityTelemetry, {
+          type: 'security_control.unavailable', severity: 'critical', outcome: 'failed',
+          requestId, clientAddress, keyId: principal?.keyId, subject: principal?.subject,
+          tenantId: principal?.tenantId, method: req.method, route: url.pathname,
+          details: { control: 'rate_limit_store', reason: error.details?.cause }
+        });
+        return sendJson(res, 503, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
+      }
       if (error instanceof AuthenticationError) {
         return sendJson(res, 401, { success: false, error: error.message, code: error.code, meta: { requestId } }, requestId, {
           'www-authenticate': 'ApiKey realm="workforce-audit"'
@@ -366,10 +404,11 @@ export function createApp({
           'retry-after': String(retryAfterSeconds)
         });
       }
-      if (error instanceof BackupIntegrityError || error instanceof ReplicaIntegrityError || error instanceof RecoveryConflictError) {
+      if (error instanceof BackupIntegrityError || error instanceof ReplicaIntegrityError || error instanceof RecoveryConflictError
+          || error instanceof SecurityArchiveIntegrityError) {
         return sendJson(res, 409, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
       }
-      if (error instanceof CoordinationLostError || error instanceof CoordinationUnavailableError) {
+      if (error instanceof CoordinationLostError || error instanceof CoordinationUnavailableError || error instanceof SecurityArchiveError) {
         return sendJson(res, 503, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
       }
       if (error instanceof BackupError || error instanceof ReplicaError) {
@@ -395,7 +434,7 @@ export function createApp({
   server.once('listening', () => scheduler.start());
   server.once('close', () => scheduler.stop());
   server.resilienceScheduler = scheduler;
-  server.apiSecurity = { rateLimiter, securityTelemetry };
+  server.apiSecurity = { rateLimiter, securityTelemetry, securityArchive };
   return server;
 }
 
@@ -433,6 +472,13 @@ function parsePositiveInteger(value, fallback, maximum) {
   return Math.min(parsed, maximum);
 }
 
+function parseNonNegativeInteger(value, fallback) {
+  if (value === null) return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new ValidationError('afterSequence must be a non-negative integer.', { field: 'afterSequence' });
+  return parsed;
+}
+
 function applyRateDecision(res, rateLimiter, decision) {
   const headers = typeof rateLimiter.headers === 'function' ? rateLimiter.headers(decision) : {};
   for (const [name, value] of Object.entries(headers)) setDeferredHeader(res, name, value);
@@ -445,6 +491,26 @@ function setDeferredHeader(res, name, value) {
 
 function safeRecordSecurityEvent(telemetry, input) {
   try { telemetry.record(input); } catch (error) { console.error('Security telemetry record failed', error); }
+}
+
+function publicSecurityHealth({ credentials, rateLimiting, telemetry }) {
+  return {
+    credentials,
+    rateLimiting: omitOperationalPaths(rateLimiting),
+    telemetry: {
+      ...telemetry,
+      archive: omitOperationalPaths(telemetry.archive)
+    }
+  };
+}
+
+function omitOperationalPaths(value) {
+  if (!value || typeof value !== 'object') return value;
+  const clone = structuredClone(value);
+  delete clone.directory;
+  delete clone.keyId;
+  if (clone.mutex && typeof clone.mutex === 'object') delete clone.mutex.directory;
+  return clone;
 }
 
 function sendJson(res, status, payload, requestId, additionalHeaders = {}) {
