@@ -22,7 +22,7 @@ npm run build
 npm start
 ```
 
-Open `http://localhost:3000/dashboard/workforce-audit`. Development defaults to the local API key; the dashboard also accepts a short-lived OIDC bearer token.
+Open `http://localhost:3000/dashboard/workforce-audit`. Development defaults to the local API key. The dashboard accepts a short-lived OIDC bearer token only after OIDC federation has been configured and `WORKFORCE_AUDIT_AUTH_MODE` is `oidc` or `hybrid`.
 
 ## Enterprise identity and provisioning
 
@@ -46,8 +46,10 @@ WORKFORCE_AUDIT_SCIM_ENABLED=true
 Generate a separate SCIM credential:
 
 ```bash
-npm run scim:credential:generate -- scim-2026-q3 enterprise-idp 2026-10-31T00:00:00Z scim:read,scim:write
+npm run scim:credential:generate -- scim-2026-q3 enterprise-idp --expires-at 2026-10-31T00:00:00Z --scopes scim:read,scim:write
 ```
+
+The command prints a one-time `presentedToken` and a scrypt-backed `record`. Store the **presented token only in the identity provider or approved secret manager**. Put **only the generated record** in `WORKFORCE_AUDIT_SCIM_CREDENTIALS`; never place the plaintext presented token in that environment variable.
 
 Configure the identity provider with `https://basitclaw.example.com/scim/v2`. Provisioned users receive an encrypted approved tenant, role, active state, and review deadline. OIDC access is denied when the identity is unprovisioned, suspended, mismatched, overdue for review, or the required entitlement store is unavailable.
 
