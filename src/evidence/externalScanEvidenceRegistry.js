@@ -7,7 +7,8 @@ import {
   createExternalScanAttestationRegistryFromEnvironment
 } from './externalScanAttestationRegistry.js';
 import { createExternalScanContentReaderFromEnvironment } from './externalScanContentReader.js';
-import { createExternalScanJobOutbox, createExternalScanJobOutboxFromEnvironment } from './externalScanJobOutbox.js';
+import { createExternalScanJobOutbox } from './externalScanJobOutbox.js';
+import { createManagedExternalScanJobOutboxFromEnvironment } from './externalScanJobLifecycle.js';
 
 const POLICY_RESOURCE = 'external-scan-release-policy';
 
@@ -205,7 +206,7 @@ export function createExternalScanEvidenceRegistry({
 export function createExternalScanEvidenceRegistryFromEnvironment(env = process.env) {
   const registry = createScreenedEvidenceRegistryFromEnvironment(env);
   const attestations = createExternalScanAttestationRegistryFromEnvironment({ env, evidenceRegistry: registry });
-  const jobs = createExternalScanJobOutboxFromEnvironment({ env, evidenceRegistry: registry });
+  const jobs = createManagedExternalScanJobOutboxFromEnvironment({ env, evidenceRegistry: registry });
   if (!registry.enabled && (attestations.enabled || jobs.enabled)) throw new EvidenceConflictError('External scanner controls require enabled evidence custody.');
   if (jobs.enabled && !registry.screeningEnabled) throw new EvidenceConflictError('External scan delivery requires enabled evidence screening.');
   if (jobs.enabled && !attestations.enabled) throw new EvidenceConflictError('External scan delivery requires signed external scanner attestations.');
