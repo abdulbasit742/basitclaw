@@ -34,12 +34,32 @@ export async function prepareIdentityProvider({
   return { health: oidc.health(), refreshTimer };
 }
 
+export function prepareIdentityLifecycle({ app, env = process.env } = {}) {
+  const entitlementHealth = app?.identityEntitlements?.health?.() ?? { status: 'disabled', enabled: false, required: false };
+  if (entitlementHealth.required && entitlementHealth.status !== 'ready') {
+    const error = new Error('The required identity entitlement lifecycle is not ready.');
+    error.code = 'IDENTITY_ENTITLEMENT_STORE_UNAVAILABLE';
+    error.details = entitlementHealth;
+    throw error;
+  }
+  const scimHealth = app?.scimHandler?.health?.() ?? { registry: entitlementHealth, credentials: { status: 'disabled', enabled: false } };
+  if (String(env.WORKFORCE_AUDIT_SCIM_ENABLED ?? 'false') === 'true'
+      && (scimHealth.registry?.status === 'unavailable' || scimHealth.credentials?.status !== 'ready')) {
+    const error = new Error('The SCIM provisioning boundary is not ready.');
+    error.code = 'SCIM_UNAVAILABLE';
+    error.details = scimHealth;
+    throw error;
+  }
+  return { entitlementHealth, scimHealth };
+}
+
 export async function startRuntime({
   env = process.env,
   app = createFederatedApp({ env }),
   logger = console
 } = {}) {
   const identity = await prepareIdentityProvider({ authenticationGateway: app.authenticationGateway, env, logger });
+  prepareIdentityLifecycle({ app, env });
   if (identity.refreshTimer) app.once('close', () => clearInterval(identity.refreshTimer));
   const port = integer(env.PORT ?? 3000, 'PORT', 1, 65_535);
   await new Promise((resolve, reject) => {
