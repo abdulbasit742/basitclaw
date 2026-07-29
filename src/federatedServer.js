@@ -11,6 +11,7 @@ import {
   createIdentityEntitlementRegistryFromEnvironment
 } from './security/identityEntitlementRegistry.js';
 import { OidcUnavailableError } from './security/oidcAuthenticator.js';
+import { createPrivilegedAccessAdapter } from './security/privilegedAccessAdapter.js';
 import { createPrivilegedAccessHandler } from './security/privilegedAccessHandler.js';
 import {
   PrivilegedAccessConflictError,
@@ -29,7 +30,7 @@ export function createFederatedApp({
   env = process.env,
   registry = createRuntimeWorkforceAuditRegistry(),
   identityEntitlements = createIdentityEntitlementRegistryFromEnvironment(env),
-  privilegedAccess = createPrivilegedAccessRegistryFromEnvironment(env),
+  privilegedAccess = createPrivilegedAccessAdapter(createPrivilegedAccessRegistryFromEnvironment(env)),
   authenticationGateway = createAuthenticationGatewayFromEnvironment(env, {
     entitlementRegistry: identityEntitlements,
     privilegedAccessRegistry: privilegedAccess
@@ -96,7 +97,7 @@ export function createFederatedApp({
       const principal = await authenticationGateway.authenticate(req);
       if (privilegedRoute) return await privilegedAccessHandler.handle(req, res, principal, requestId);
       const effectivePrincipal = protectedPermission
-        ? privilegedAccess.authorise(principal, protectedPermission)
+        ? authenticationGateway.authorise(principal, protectedPermission)
         : principal;
       authenticatedRequests.set(req, effectivePrincipal);
       return innerHandler(req, res);
@@ -189,7 +190,12 @@ export function createFederatedApp({
           method: req.method, route: url.pathname,
           details: { reason: error.details?.reason, authMethod: 'oidc' }
         });
-        return sendJson(res, 403, { success: false, error: error.message, code: error.code, meta: { requestId } }, requestId);
+        return sendJson(res, 403, {
+          success: false,
+          error: error.message,
+          code: error.details?.reason?.startsWith('PRIVILEGED_') ? error.details.reason : error.code,
+          meta: { requestId }
+        }, requestId);
       }
       if (error instanceof RateLimitStoreError) {
         return sendJson(res, 503, {
@@ -204,6 +210,14 @@ export function createFederatedApp({
         });
         return sendJson(res, 503, {
           success: false, error: error.message, code: 'OIDC_UNAVAILABLE', meta: { requestId }
+        }, requestId, { 'retry-after': '30' });
+      }
+      if (error?.code === 'PERSISTENCE_UNAVAILABLE' && error.details?.control === 'privileged_access') {
+        return sendJson(res, 503, {
+          success: false,
+          error: 'The privileged-access store is unavailable.',
+          code: 'PRIVILEGED_ACCESS_STORE_UNAVAILABLE',
+          meta: { requestId }
         }, requestId, { 'retry-after': '30' });
       }
       console.error('Unhandled federated authentication error', { requestId, error });
