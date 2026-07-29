@@ -26,7 +26,7 @@ await requireMarkers('src/evidence/evidenceScreeningEngine.js', 'Screening engin
   'WORKFORCE_AUDIT_EVIDENCE_SCREENING_MODE'
 ]);
 await requireMarkers('src/evidence/evidenceScreeningRegistry.js', 'Screening registry', [
-  'aes-256-gcm',
+  'encryptEvidenceJson',
   'EVIDENCE_QUARANTINED',
   'RELEASE QUARANTINE',
   'REJECT EVIDENCE',
