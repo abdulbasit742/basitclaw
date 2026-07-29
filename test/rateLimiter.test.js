@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyRequest, createAdaptiveRateLimiter, resolveClientAddress } from '../src/security/rateLimiter.js';
+import {
+  classifyRequest,
+  createAdaptiveRateLimiter,
+  createAdaptiveRateLimiterFromEnvironment,
+  resolveClientAddress
+} from '../src/security/rateLimiter.js';
 
 const policies = {
   burst: { limit: 2, windowMs: 1000 },
@@ -33,4 +38,10 @@ test('client address trusts only the configured proxy depth', () => {
   assert.equal(resolveClientAddress(request, 0), '10.0.0.5');
   assert.equal(resolveClientAddress(request, 1), '10.0.0.4');
   assert.equal(resolveClientAddress(request, 2), '203.0.113.10');
+});
+
+test('unknown limiter modes fail closed', () => {
+  assert.throws(() => createAdaptiveRateLimiterFromEnvironment({
+    WORKFORCE_AUDIT_RATE_LIMIT_MODE: 'typo'
+  }), /must be memory or disabled/);
 });
