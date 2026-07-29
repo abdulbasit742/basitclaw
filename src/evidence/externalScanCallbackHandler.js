@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { SecurityControlBusyError, SecurityControlUnavailableError } from '../security/fileMutex.js';
 import { RateLimitStoreError } from '../security/sharedRateLimiter.js';
 import {
   EvidenceConflictError,
@@ -52,6 +53,24 @@ export function createExternalScanCallbackHandler({ registry, rateLimiter = null
       if (error instanceof ExternalScanAuthenticationError) {
         record(securityTelemetry, { type: 'external_scan.authentication_failed', severity: 'critical', outcome: 'denied', requestId, method: req.method, route: ROUTE, details: { reason: error.details?.reason ?? error.code } });
         return sendJson(res, 401, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId, { 'www-authenticate': 'HMAC realm="workforce-audit-external-scanner"' });
+      }
+      if (error instanceof SecurityControlBusyError) {
+        return sendJson(res, 423, {
+          success: false,
+          error: 'The external scanner release-policy boundary is busy. Retry the callback.',
+          code: 'EXTERNAL_SCAN_POLICY_BUSY',
+          details: error.details,
+          meta: { requestId }
+        }, requestId, { 'retry-after': String(Math.max(1, Math.ceil((error.details?.retryAfterMs ?? 1000) / 1000))) });
+      }
+      if (error instanceof SecurityControlUnavailableError) {
+        return sendJson(res, 503, {
+          success: false,
+          error: 'The external scanner release-policy boundary is unavailable.',
+          code: 'EXTERNAL_SCAN_POLICY_UNAVAILABLE',
+          details: error.details,
+          meta: { requestId }
+        }, requestId, { 'retry-after': '30' });
       }
       if (error instanceof RateLimitStoreError) return sendJson(res, 503, { success: false, error: error.message, code: error.code, meta: { requestId } }, requestId, { 'retry-after': '30' });
       if (error instanceof EvidenceValidationError || error instanceof EvidenceConflictError
