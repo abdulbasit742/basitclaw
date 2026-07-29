@@ -2,7 +2,7 @@
 
 BasitClaw is a dependency-light Node.js workspace for enterprise workforce internal-audit assurance.
 
-Passes 1–12 established the audit universe, governed engagements and findings, tenant isolation, tamper-evident history, encrypted persistence and recovery, replicas and drills, fenced multi-process writes, lifecycle-managed credentials, fleet-wide security controls, signed alert delivery, key rotation, OIDC federation, and governed SCIM identity lifecycle. Pass 13 added time-boxed privileged access and controlled break glass. Pass 14 added encrypted audit evidence, immutable versions, registered finding references, chain-of-custody integrity, legal holds, and governed disposition. Pass 15 added deterministic admission screening and encrypted quarantine. Pass 16 adds signed external antivirus, sandbox and DLP attestations with immutable hash binding and optional release gating.
+Passes 1–12 established the audit universe, governed engagements and findings, tenant isolation, tamper-evident history, encrypted persistence and recovery, replicas and drills, fenced multi-process writes, lifecycle-managed credentials, fleet-wide security controls, signed alert delivery, key rotation, OIDC federation, and governed SCIM identity lifecycle. Pass 13 added time-boxed privileged access and controlled break glass. Pass 14 added encrypted audit evidence, immutable versions, registered finding references, chain-of-custody integrity, legal holds, and governed disposition. Pass 15 added deterministic admission screening and encrypted quarantine. Pass 16 added signed external antivirus, sandbox and DLP attestations with immutable hash binding and release gating. Pass 17 adds controlled scanner pull jobs with RSA/AES sealed evidence packages, durable replay protection and attestation-linked completion.
 
 ## Requirements
 
@@ -11,6 +11,7 @@ Passes 1–12 established the audit universe, governed engagements and findings,
 - An approved OIDC identity provider when bearer authentication is enabled
 - An approved SCIM provisioning client when governed identity lifecycle is enabled
 - An approved external scanner or scanner orchestrator when external attestations are enforced
+- A scanner-managed RSA private key, with only its public key configured in BasitClaw, when sealed pull delivery is enabled
 
 ## Local setup
 
@@ -120,7 +121,36 @@ GET /api/workforce-audit/external-scanner/status
 GET /api/workforce-audit/evidence/{evidenceId}/external-scans
 ```
 
-BasitClaw intentionally does not send quarantined bytes to arbitrary external URLs. Use a controlled sidecar, private object-store event, one-way transfer or approved sandbox pipeline to scan the original immutable bytes. See `docs/external-scanner-attestations.md`.
+See `docs/external-scanner-attestations.md`.
+
+## Sealed external scanner delivery
+
+Pass 17 closes the evidence-transfer gap without creating arbitrary outbound egress. Configure each provider with an HMAC keyring and an RSA public-key ring, while the scanner retains the corresponding private key.
+
+```bash
+WORKFORCE_AUDIT_EXTERNAL_SCAN_DELIVERY_MODE=pull
+WORKFORCE_AUDIT_EXTERNAL_SCAN_DELIVERY_REQUIRED=true
+WORKFORCE_AUDIT_EXTERNAL_SCAN_DELIVERY_DIR=/var/lib/basitclaw/workforce-audit-evidence/.external-scan-jobs
+WORKFORCE_AUDIT_EXTERNAL_SCANNER_PROVIDERS='{"managed-av":{"keys":{"2026-q3":"<base64-hmac-secret>"},"publicKeys":{"2026-q3":"-----BEGIN PUBLIC KEY-----\n<rsa-public-key>\n-----END PUBLIC KEY-----\n"}}}'
+```
+
+Audit managers and compliance administrators can queue only a quarantined immutable version:
+
+```text
+POST /api/workforce-audit/evidence/{evidenceId}/external-scan-jobs
+GET  /api/workforce-audit/evidence/{evidenceId}/external-scan-jobs
+GET  /api/workforce-audit/external-scan-delivery/status
+```
+
+Approved scanners use HMAC-authenticated pull routes:
+
+```text
+POST /api/workforce-audit/external-scanner/jobs/claim
+POST /api/workforce-audit/external-scanner/jobs/{jobId}/acknowledge
+POST /api/workforce-audit/external-scanner/jobs/{jobId}/fail
+```
+
+Before queuing, BasitClaw revalidates the evidence AES-GCM envelope, identity, SHA-256, size and screening report. Each package uses a random AES-256-GCM content key wrapped with RSA-OAEP-SHA-256 to the provider's public key. Management metadata remains encrypted, HMAC requests have durable replay protection, and completed or dead-letter records discard the package ciphertext. A matching pass-16 attestation completes the deterministic job but never auto-releases evidence. See `docs/external-scan-delivery.md`.
 
 ## API credentials
 
@@ -194,11 +224,11 @@ Every mutation acquires a tenant lease and writes under a monotonically increasi
 
 ## Verification
 
-- `npm test` covers audit controls, credentials, OIDC/JWKS, SCIM lifecycle, JIT access, encrypted evidence custody, deterministic screening, signed external attestations, persistence, recovery, replicas, coordination, quotas, alerts, rotation and readiness.
+- `npm test` covers audit controls, credentials, OIDC/JWKS, SCIM lifecycle, JIT access, encrypted evidence custody, deterministic screening, signed external attestations, sealed scanner delivery, persistence, recovery, replicas, coordination, quotas, alerts, rotation and readiness.
 - `npm run lint` validates runtime syntax.
 - `npm run build` verifies required production boundaries and dashboard markers.
 - GitHub Actions runs all checks on pull requests and pushes to `main`.
 
 ## Deployment boundary
 
-Shared-file controls are unsuitable for eventually consistent object-store mounts. Production still requires managed secret custody, monitored mounts, approved retention, controlled evidence transfer to scanners, authoritative HR and access-approval systems, an identity provider that issues and revokes tokens, receivers that verify alert signatures, external WORM/object-lock storage where required, and regular recovery, custody, scanner-key and access-review exercises.
+Shared-file controls are unsuitable for eventually consistent object-store mounts. Production still requires managed secret custody, monitored mounts, approved retention, an approved scanner worker that protects its RSA private keys and destroys temporary plaintext, authoritative HR and access-approval systems, an identity provider that issues and revokes tokens, receivers that verify alert signatures, external WORM/object-lock storage where required, and regular recovery, custody, scanner-key, delivery and access-review exercises.
