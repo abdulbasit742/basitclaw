@@ -238,13 +238,23 @@ export interface ExternalScanDeliveryHealth {
   mode: 'disabled' | 'pull';
   durable?: boolean;
   distributed?: boolean;
+  encryptedRecords?: boolean;
   plaintextQueued?: false;
   publicKeySealed?: boolean;
   requestReplayProtected?: boolean;
+  expiryEnforced?: boolean;
   providerCount?: number;
   jobTtlMinutes?: number;
   claimLeaseMs?: number;
   maxAttempts?: number;
+  maxClaimBytes?: number;
+  estimatedMaximumPackageBytes?: number;
+  maximumClaimJobs?: number;
+  maintenance?: {
+    reconciled: number;
+    expiredPending: number;
+    expiredDelivered: number;
+  };
   counts?: Record<ExternalScanJobState, number>;
   error?: string;
 }
