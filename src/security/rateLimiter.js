@@ -93,9 +93,12 @@ export function createAdaptiveRateLimiter({
 }
 
 export function createAdaptiveRateLimiterFromEnvironment(env = process.env) {
-  const enabled = String(env.WORKFORCE_AUDIT_RATE_LIMIT_MODE ?? 'memory') !== 'disabled';
+  const mode = String(env.WORKFORCE_AUDIT_RATE_LIMIT_MODE ?? 'memory');
+  if (!['memory', 'disabled'].includes(mode)) {
+    throw new TypeError('WORKFORCE_AUDIT_RATE_LIMIT_MODE must be memory or disabled.');
+  }
   return createAdaptiveRateLimiter({
-    enabled,
+    enabled: mode === 'memory',
     trustProxyHops: Number(env.WORKFORCE_AUDIT_TRUST_PROXY_HOPS ?? 0),
     policies: {
       burst: { limit: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_BURST_PER_MINUTE ?? 300), windowMs: 60_000 },
