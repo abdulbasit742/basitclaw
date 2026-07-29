@@ -1,73 +1,67 @@
 # Workforce-audit API security runbook
 
-## Credential format
+## Credential format and lifecycle
 
-Development may continue using a legacy plaintext `apiKey` record. Production rejects plaintext credential records and requires a scrypt-backed record:
-
-```json
-{
-  "keyId": "admin-2026-q3",
-  "salt": "<random-salt>",
-  "secretHash": "<base64-scrypt-hash>",
-  "subject": "audit-admin",
-  "tenantId": "tenant-acme",
-  "role": "compliance_admin",
-  "status": "active",
-  "notBefore": "2026-07-29T00:00:00.000Z",
-  "expiresAt": "2026-10-31T00:00:00.000Z"
-}
-```
-
-The client presents `keyId.secret` in `x-api-key`. Only the scrypt hash and salt belong in `WORKFORCE_AUDIT_API_KEYS`.
-
-Generate a credential with:
+Development may use a legacy plaintext `apiKey` record. Production rejects plaintext records and requires `keyId.secret` credentials backed by a random salt and base64 scrypt hash. Generate one with:
 
 ```bash
 npm run credential:generate -- admin-2026-q3 audit-admin tenant-acme compliance_admin 2026-10-31T00:00:00Z
 ```
 
-The command prints the presented key once and a configuration record. Store the presented key in a secret manager immediately; do not commit it, write it to application logs, or place it in support tickets.
+Store the presented key in a secret manager and place only the generated record in `WORKFORCE_AUDIT_API_KEYS`. `active` credentials are accepted inside their time window, `retiring` credentials receive `x-api-key-rotation-required: true`, and revoked, expired, or premature credentials fail closed with explicit 401 codes.
 
-## Lifecycle states
+Rotate by adding a replacement as `active`, marking the old credential `retiring`, updating clients, and then marking the old credential `revoked`.
 
-- `active`: accepted while inside its optional activation and expiry window.
-- `retiring`: accepted, but responses include `x-api-key-rotation-required: true`.
-- `revoked`: rejected with `401 CREDENTIAL_REVOKED`.
-- A future `notBefore` is rejected with `401 CREDENTIAL_NOT_ACTIVE`.
-- An elapsed `expiresAt` is rejected with `401 CREDENTIAL_EXPIRED`.
+## Rate-limit modes
 
-Credentials expiring within `WORKFORCE_AUDIT_CREDENTIAL_WARNING_DAYS` also receive the rotation-required header. Rotate by adding the replacement as `active`, marking the old record `retiring`, deploying both, updating clients, then marking the old record `revoked`.
+The limiter separates client bursts, failed authentication, authenticated reads, authenticated writes, and sensitive recovery operations. Exceeded limits return `429 RATE_LIMITED`, `Retry-After`, and standard rate-limit headers.
 
-## Rate-limit policies
+Available modes:
 
-The built-in limiter applies separate fixed windows for:
+- `memory`: process-local fixed windows for single-process development or defence in depth.
+- `shared-file`: fleet-wide fixed windows stored on a shared durable filesystem.
+- `disabled`: accepted only when distributed enforcement is not required.
 
-- per-client bursts;
-- failed authentication attempts;
-- authenticated reads;
-- authenticated writes;
-- sensitive restore, replication, drill, and manual resilience operations.
+A coordinated production deployment requires `shared-file` by default. The shared store uses atomic per-bucket locks, hashed identities, fsynced replacement files, stale-lock recovery, bounded bucket capacity, and fail-closed corruption handling. Raw client addresses and credential values are never written to bucket files.
 
-Exceeded limits return `429 RATE_LIMITED`, `Retry-After`, `RateLimit-Limit`, `RateLimit-Remaining`, and `RateLimit-Reset`.
+```bash
+WORKFORCE_AUDIT_RATE_LIMIT_MODE=shared-file
+WORKFORCE_AUDIT_RATE_LIMIT_DIR=/var/lib/basitclaw/workforce-audit-rate-limits
+WORKFORCE_AUDIT_DISTRIBUTED_RATE_LIMIT_REQUIRED=true
+```
 
-The built-in limiter is intentionally process-local and reports `distributed: false`. In a multi-process deployment its limits are defence in depth, not a global quota. Enforce an additional shared limit at the ingress gateway or service mesh.
+Use shared-file mode only on storage with reliable atomic `mkdir` and `rename`. Do not use eventually consistent object-store mounts.
 
 ## Trusted proxy handling
 
-`WORKFORCE_AUDIT_TRUST_PROXY_HOPS=0` is the safe default and uses the direct socket address. Increase it only when the application is behind exactly that many controlled reverse proxies. A wrong value can allow spoofed `x-forwarded-for` values or group unrelated clients under one address.
+`WORKFORCE_AUDIT_TRUST_PROXY_HOPS=0` is the safe default and uses the direct socket address. Increase it only when the application is behind exactly that many controlled reverse proxies. An incorrect value can allow spoofed forwarding data or group unrelated clients together.
 
-## Security telemetry
+## Security telemetry and encrypted archive
 
-The bounded event buffer records only security-relevant events:
+The in-memory event buffer records failed credential use, permission denial, tenant override attempts, throttling, and shared-control failures. It stores keyed client fingerprints, strips key/secret/token/password/address fields, and maintains a bounded local hash chain.
 
-- failed, expired, revoked, or premature credential use;
-- permission denial;
-- tenant override attempts;
-- request throttling.
+For durable fleet-wide evidence, enable the encrypted archive:
 
-Client addresses are stored only as keyed SHA-256 fingerprints. Keys, secrets, passwords, tokens, and raw addresses are removed from event details. Configure `WORKFORCE_AUDIT_SECURITY_EVENT_PEPPER` with a stable secret if fingerprints must remain comparable across restarts.
+```bash
+WORKFORCE_AUDIT_SECURITY_ARCHIVE_MODE=shared-file
+WORKFORCE_AUDIT_SECURITY_ARCHIVE_REQUIRED=true
+WORKFORCE_AUDIT_SECURITY_ARCHIVE_DIR=/var/lib/basitclaw/workforce-audit-security-archive
+WORKFORCE_AUDIT_SECURITY_ARCHIVE_KEY_ID=security-archive-v1
+WORKFORCE_AUDIT_SECURITY_ARCHIVE_KEY=<base64-32-byte-key>
+WORKFORCE_AUDIT_SECURITY_ARCHIVE_RETENTION_DAYS=90
+```
 
-The event buffer is hash-chained but process-local and non-durable. Export alerts to a central security platform in a later integration; do not treat this bounded memory buffer as the organisation's authoritative SIEM archive.
+The archive provides:
+
+- AES-256-GCM encrypted event envelopes;
+- an HMAC-authenticated global sequence and hash chain;
+- atomic cross-process appends;
+- recovery when a segment write committed but the head update was interrupted;
+- signed retention anchors after old segments are pruned;
+- a signed prune journal for roll-forward or rollback after interruption;
+- integrity verification and cursor-based export for SIEM polling.
+
+The archive key is independent from the workforce-audit data key. Keep it in managed secret custody. Changing or losing the key makes retained archive segments unverifiable; automatic archive-key rotation is not yet implemented.
 
 ## APIs and permissions
 
@@ -75,16 +69,29 @@ Only `compliance_admin` has `security:read`:
 
 - `GET /api/workforce-audit/security-status`
 - `GET /api/workforce-audit/security-events?limit=100&type=<type>&severity=<severity>`
+- `GET /api/workforce-audit/security-archive-events?afterSequence=0&limit=100`
+- `GET /api/workforce-audit/security-archive-integrity`
 
-Public `/health` exposes readiness counts and subsystem status, but never credential hashes, salts, presented keys, or raw security events.
+The archive export response includes `nextSequence` for cursor polling. Public `/health` reports readiness but removes storage paths, lock directories, and archive key identifiers.
+
+## Failure responses
+
+- `429 RATE_LIMITED`: a policy was exceeded.
+- `503 RATE_LIMIT_STORE_UNAVAILABLE`: a shared quota could not be updated safely.
+- `409 SECURITY_ARCHIVE_INTEGRITY_FAILED`: encrypted evidence, its sequence, signature, or retention anchor is inconsistent.
+- `503 SECURITY_ARCHIVE_UNAVAILABLE`: the archive filesystem or lock could not complete safely.
+
+A required archive or required shared limiter degrades `/health` to 503. Do not bypass a damaged control to restore readiness; preserve the files, investigate integrity, and recover from approved evidence.
 
 ## Deployment checklist
 
 1. Generate high-entropy credentials and store presented keys in a secret manager.
-2. Remove every plaintext `apiKey` record before setting `NODE_ENV=production`.
-3. Configure expiry windows and a documented rotation owner.
-4. Set the trusted proxy hop count only after validating the ingress chain.
-5. Apply global distributed rate limits at ingress for multi-process deployments.
-6. Configure a stable telemetry pepper.
-7. Verify `security-status`, rotation headers, `429` behaviour, and `/health` before completing rollout.
-8. Never disable throttling to resolve an incident; adjust approved policy values and retain evidence of the change.
+2. Remove plaintext `apiKey` records before production.
+3. Configure expiry windows and a rotation owner.
+4. Validate trusted proxy depth.
+5. Mount rate-limit and archive directories on a qualifying shared durable filesystem.
+6. Configure a stable telemetry pepper and managed archive key.
+7. Enable required flags only after verifying shared mounts from every process.
+8. Test cross-process quotas, archive export, integrity, `429`, and degraded `/health` behaviour.
+9. Poll archive events into the organisation's SIEM and retain the returned cursor externally.
+10. Never force-delete locks, bucket files, archive segments, anchors, or prune journals during an incident.

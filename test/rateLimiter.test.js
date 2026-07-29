@@ -43,5 +43,5 @@ test('client address trusts only the configured proxy depth', () => {
 test('unknown limiter modes fail closed', () => {
   assert.throws(() => createAdaptiveRateLimiterFromEnvironment({
     WORKFORCE_AUDIT_RATE_LIMIT_MODE: 'typo'
-  }), /must be memory or disabled/);
+  }), /must be memory, shared-file, or disabled/);
 });
