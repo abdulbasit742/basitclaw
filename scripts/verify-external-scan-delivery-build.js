@@ -3,9 +3,11 @@ import { access, readFile } from 'node:fs/promises';
 const requiredFiles = [
   'src/evidence/externalScanContentReader.js',
   'src/evidence/externalScanJobOutbox.js',
+  'src/evidence/externalScanJobLifecycle.js',
   'src/evidence/externalScanJobGovernanceHandler.js',
   'src/evidence/externalScanJobDeliveryHandler.js',
   'test/externalScanJobOutbox.test.js',
+  'test/externalScanJobLifecycle.test.js',
   'test/externalScanJobServer.test.js',
   'docs/external-scan-delivery.md',
   'config/evidence-screening.production.env.example'
@@ -35,6 +37,15 @@ await requireMarkers('src/evidence/externalScanJobOutbox.js', 'Sealed scanner jo
   'reconcileLocationsLocked',
   'requeued: true'
 ]);
+await requireMarkers('src/evidence/externalScanJobLifecycle.js', 'Scanner job lifecycle', [
+  'EXTERNAL_SCAN_CLAIM_BUDGET_EXCEEDED',
+  'attestation_timeout',
+  'expiredPending',
+  'expiredDelivered',
+  'maxClaimBytes',
+  'primaryPublicKeyId',
+  'createManagedExternalScanJobOutboxFromEnvironment'
+]);
 await requireMarkers('src/evidence/externalScanEvidenceRegistry.js', 'Scanner job evidence composition', [
   'Only quarantined evidence versions can be queued',
   'queueExternalScanJob',
@@ -42,7 +53,8 @@ await requireMarkers('src/evidence/externalScanEvidenceRegistry.js', 'Scanner jo
   'externalScanDelivery',
   'external-scan-release-policy',
   'requires enabled evidence screening',
-  'requires signed external scanner attestations'
+  'requires signed external scanner attestations',
+  'createManagedExternalScanJobOutboxFromEnvironment'
 ]);
 await requireMarkers('src/evidence/externalScanJobGovernanceHandler.js', 'Scanner job governance API', [
   '/external-scan-jobs',
@@ -65,11 +77,15 @@ await requireMarkers('docs/external-scan-delivery.md', 'Scanner delivery runbook
   'never auto-releases',
   'private key',
   'crash-interrupted',
-  'dead-letter job'
+  'dead-letter job',
+  'claim byte budget',
+  'primaryPublicKeyId'
 ]);
 await requireMarkers('config/evidence-screening.production.env.example', 'Production scanner delivery configuration', [
   'WORKFORCE_AUDIT_EXTERNAL_SCAN_DELIVERY_MODE=pull',
   'WORKFORCE_AUDIT_EXTERNAL_SCAN_DELIVERY_REQUIRED=true',
+  'WORKFORCE_AUDIT_EXTERNAL_SCAN_MAX_CLAIM_BYTES=',
+  'primaryPublicKeyId',
   'publicKeys'
 ]);
 await requireMarkers('public/workforce-audit.html', 'Scanner delivery dashboard', [
