@@ -16,7 +16,19 @@ test('telemetry sends only its sanitised event into alert delivery', () => {
   const alertDispatcher = {
     enabled: true,
     enqueue(event) { received.push(event); },
-    health: () => ({ status: 'ready', enabled: true, required: true, mode: 'test-delivery' })
+    health: () => ({
+      status: 'ready',
+      enabled: true,
+      required: true,
+      mode: 'test-delivery',
+      directory: '/secret/outbox',
+      outbox: {
+        status: 'ready',
+        pending: 0,
+        directory: '/secret/outbox',
+        mutex: { status: 'ready', directory: '/secret/locks' }
+      }
+    })
   };
   const telemetry = createSecurityTelemetry({
     pepper: 'telemetry-pepper-123456789',
@@ -38,6 +50,7 @@ test('telemetry sends only its sanitised event into alert delivery', () => {
   assert.equal(summary.alertDelivery.status, 'ready');
   assert.equal(summary.archive.required, true);
   assert.equal(summary.archive.status, 'ready');
+  assert.doesNotMatch(JSON.stringify(summary.alertDelivery), /\/secret\/outbox|\/secret\/locks/);
 });
 
 test('required alert delivery failure marks the security evidence pipeline unavailable', () => {
