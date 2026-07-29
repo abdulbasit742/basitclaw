@@ -29,12 +29,18 @@ test('required entitlement storage fails startup closed', () => {
   }), (error) => error.code === 'IDENTITY_ENTITLEMENT_STORE_UNAVAILABLE');
 });
 
-test('enabled SCIM with unusable credentials fails startup closed', () => {
-  assert.throws(() => prepareIdentityLifecycle({
-    app: {
-      identityEntitlements: { health: () => ({ status: 'ready', enabled: true, required: true, mode: 'enforce' }) },
-      scimHandler: { health: () => ({ registry: { status: 'ready' }, credentials: { status: 'unavailable' } }) }
-    },
-    env: { WORKFORCE_AUDIT_SCIM_ENABLED: 'true' }
-  }), (error) => error.code === 'SCIM_UNAVAILABLE');
+test('enabled SCIM requires a ready registry and usable credentials', () => {
+  for (const health of [
+    { registry: { status: 'ready' }, credentials: { status: 'unavailable' } },
+    { registry: { status: 'disabled' }, credentials: { status: 'ready' } },
+    { registry: { status: 'unavailable' }, credentials: { status: 'ready' } }
+  ]) {
+    assert.throws(() => prepareIdentityLifecycle({
+      app: {
+        identityEntitlements: { health: () => ({ status: health.registry.status, enabled: true, required: true, mode: 'enforce' }) },
+        scimHandler: { health: () => health }
+      },
+      env: { WORKFORCE_AUDIT_SCIM_ENABLED: 'true' }
+    }), (error) => error.code === 'SCIM_UNAVAILABLE');
+  }
 });
