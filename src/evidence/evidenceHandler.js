@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { SecurityControlBusyError, SecurityControlUnavailableError } from '../security/fileMutex.js';
 import {
   EvidenceConflictError,
   EvidenceIntegrityError,
@@ -17,6 +18,7 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
   if (!registry || typeof registry.tenantStatus !== 'function') throw new TypeError('An evidence registry is required.');
   if (!auditRegistry || typeof auditRegistry.forTenant !== 'function') throw new TypeError('A workforce-audit registry is required.');
   if (!authenticationGateway || typeof authenticationGateway.authorise !== 'function') throw new TypeError('An authentication gateway is required.');
+  const bodyLimit = evidenceTransportLimit(registry.health?.().maxBytes);
 
   function matches(pathname) { return pathname === PREFIX || pathname.startsWith(`${PREFIX}/`); }
 
@@ -40,7 +42,7 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
       }
       if (req.method === 'POST' && url.pathname === PREFIX) {
         authenticationGateway.authorise(principal, 'finding:write');
-        const data = registry.ingest(principal.tenantId, await readJson(req), { actor: principal.subject });
+        const data = registry.ingest(principal.tenantId, await readJson(req, bodyLimit), { actor: principal.subject });
         record(securityTelemetry, event('evidence.ingested', 'info', principal, req, requestId, data));
         return sendJson(res, 201, { success: true, data, meta: meta(requestId, principal) }, requestId);
       }
@@ -68,7 +70,7 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
       const versionMatch = url.pathname.match(VERSION_ROUTE);
       if (req.method === 'POST' && versionMatch) {
         authenticationGateway.authorise(principal, 'finding:write');
-        const data = registry.addVersion(principal.tenantId, decodeURIComponent(versionMatch[1]), await readJson(req), { actor: principal.subject });
+        const data = registry.addVersion(principal.tenantId, decodeURIComponent(versionMatch[1]), await readJson(req, bodyLimit), { actor: principal.subject });
         record(securityTelemetry, event('evidence.version_added', 'info', principal, req, requestId, data));
         return sendJson(res, 201, { success: true, data, meta: meta(requestId, principal) }, requestId);
       }
@@ -98,7 +100,7 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
           return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId);
         }
         authenticationGateway.authorise(principal, 'backup:restore');
-        const input = await readJson(req);
+        const input = await readJson(req, 64 * 1024);
         let data;
         if (action === 'legal-hold') {
           data = registry.placeLegalHold(principal.tenantId, evidenceId, input, { actor: principal.subject });
@@ -117,6 +119,24 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
       }
       return notFound(res, requestId, principal);
     } catch (error) {
+      if (error instanceof SecurityControlBusyError) {
+        return sendJson(res, 423, {
+          success: false,
+          error: 'The evidence store is busy. Retry the operation.',
+          code: 'EVIDENCE_STORE_BUSY',
+          details: error.details,
+          meta: meta(requestId, principal)
+        }, requestId, { 'retry-after': String(Math.max(1, Math.ceil((error.details?.retryAfterMs ?? 1000) / 1000))) });
+      }
+      if (error instanceof SecurityControlUnavailableError) {
+        return sendJson(res, 503, {
+          success: false,
+          error: 'The evidence store coordination boundary is unavailable.',
+          code: 'EVIDENCE_STORE_UNAVAILABLE',
+          details: error.details,
+          meta: meta(requestId, principal)
+        }, requestId, { 'retry-after': '30' });
+      }
       if (error instanceof EvidenceValidationError || error instanceof EvidenceNotFoundError
           || error instanceof EvidenceConflictError || error instanceof EvidenceIntegrityError
           || error instanceof EvidenceStoreError) {
@@ -140,27 +160,17 @@ export function createEvidenceHandler({ registry, auditRegistry, authenticationG
   return { matches, handle, health: () => publicStatus(registry.health()), prefix: PREFIX };
 }
 
-function withReferences(item, auditRegistry, tenantId) {
-  return { ...item, referencedByFindings: findingReferences(auditRegistry, tenantId, item.evidenceId) };
-}
-function findingReferences(auditRegistry, tenantId, evidenceId) {
-  return auditRegistry.forTenant(tenantId).getFindings()
-    .filter((finding) => finding.evidenceRefs?.includes(evidenceId))
-    .map((finding) => finding.id);
-}
-async function readJson(req) {
+function withReferences(item, auditRegistry, tenantId) { return { ...item, referencedByFindings: findingReferences(auditRegistry, tenantId, item.evidenceId) }; }
+function findingReferences(auditRegistry, tenantId, evidenceId) { return auditRegistry.forTenant(tenantId).getFindings().filter((finding) => finding.evidenceRefs?.includes(evidenceId)).map((finding) => finding.id); }
+async function readJson(req, maximumBytes) {
   const contentType = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
   if (contentType && contentType !== 'application/json') return invalidJson('Content-Type must be application/json.');
   const chunks = [];
   let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > 140_000_000) return invalidJson('Evidence request body exceeds the 140 MB transport limit.');
-    chunks.push(chunk);
-  }
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
-  catch { return invalidJson('Request body must be valid JSON.'); }
+  for await (const chunk of req) { size += chunk.length; if (size > maximumBytes) return invalidJson(`Evidence request body exceeds the ${maximumBytes} byte transport limit.`); chunks.push(chunk); }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { return invalidJson('Request body must be valid JSON.'); }
 }
+function evidenceTransportLimit(maxBytes) { const decoded = Number(maxBytes); const safe = Number.isInteger(decoded) && decoded > 0 ? decoded : 10_000_000; return Math.min(140_000_000, Math.ceil(safe * 4 / 3) + 1_000_000); }
 function invalidJson(message) { const error = new Error(message); error.code = 'INVALID_JSON'; throw error; }
 function positiveInteger(value, fallback, maximum) { if (value === null) return fallback; const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1) throw new EvidenceValidationError('limit must be a positive integer.', { field: 'limit' }); return Math.min(parsed, maximum); }
 function optionalPositiveInteger(value) { if (value === null) return null; const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1) throw new EvidenceValidationError('version must be a positive integer.', { field: 'version' }); return parsed; }
