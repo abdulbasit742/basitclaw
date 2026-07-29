@@ -23,7 +23,7 @@ export function createExternalScanCallbackHandler({ registry, rateLimiter = null
     try {
       const client = typeof rateLimiter?.clientAddress === 'function' ? rateLimiter.clientAddress(req) : 'unknown';
       if (typeof rateLimiter?.consume === 'function') {
-        const decision = rateLimiter.consume(`external-scanner:${client}`, 'sensitive');
+        const decision = rateLimiter.consume(`external-scanner:${client}`, 'write');
         applyRateHeaders(res, rateLimiter, decision);
         if (!decision.allowed) {
           record(securityTelemetry, { type: 'external_scan.rate_limited', severity: 'high', outcome: 'denied', requestId, method: req.method, route: ROUTE, details: { policy: decision.policy } });
@@ -39,7 +39,6 @@ export function createExternalScanCallbackHandler({ registry, rateLimiter = null
         requestId,
         method: req.method,
         route: ROUTE,
-        tenantId: result.attestation.tenantId,
         details: {
           evidenceId: result.attestation.evidenceId,
           version: result.attestation.version,
