@@ -12,6 +12,7 @@ import {
   createDisabledIdentityEntitlementRegistry,
   createIdentityEntitlementRegistryFromEnvironment
 } from './identityEntitlementRegistry.js';
+import { createPrivilegedAccessAdapter } from './privilegedAccessAdapter.js';
 import {
   PrivilegedAccessError,
   PrivilegedAccessStoreError,
@@ -35,7 +36,9 @@ export function createAuthenticationGateway({
   if (authenticationMode !== 'api-key' && !oidcAuthenticator) throw new TypeError('OIDC authentication is required by the configured authentication mode.');
   const knownOidcTenants = new Set(oidcAllowedTenants.map((value) => String(value).trim()).filter(Boolean));
   const entitlements = entitlementRegistry ?? createDisabledIdentityEntitlementRegistry();
-  const privilegedAccess = privilegedAccessRegistry ?? createDisabledPrivilegedAccessRegistry();
+  const privilegedAccess = createPrivilegedAccessAdapter(
+    privilegedAccessRegistry ?? createDisabledPrivilegedAccessRegistry()
+  );
 
   async function authenticate(req) {
     const apiKey = headerValue(req.headers?.['x-api-key']);
