@@ -9,9 +9,18 @@ export interface AuditPrincipal {
   role: AuditRole;
   permissions: string[];
   keyId: string;
-  credentialStatus: 'active' | 'retiring' | 'revoked';
+  authMethod: 'api_key' | 'oidc';
+  credentialStatus: 'active' | 'retiring' | 'revoked' | 'federated';
   credentialExpiresAt: string | null;
   rotationRequired: boolean;
+  externalSubjectHash?: string;
+  issuer?: string;
+  audience?: string | null;
+  signingKeyId?: string;
+  authenticationContext?: {
+    acr: string | null;
+    amr: string[];
+  };
 }
 
 export interface AuditEngagement {
