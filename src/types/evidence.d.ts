@@ -3,6 +3,7 @@ export type EvidenceSourceType = 'uploaded' | 'system_export' | 'email' | 'inter
 export type EvidenceScreeningDecision = 'clean' | 'quarantine' | 'rejected';
 export type EvidenceScreeningSeverity = 'medium' | 'high' | 'critical';
 export type ExternalScanVerdict = 'clean' | 'suspicious' | 'malicious' | 'error';
+export type ExternalScanJobState = 'pending' | 'inflight' | 'delivered' | 'completed' | 'dead-letter';
 
 export interface EvidenceScreeningFinding {
   ruleId: string;
@@ -36,6 +37,25 @@ export interface ExternalScanAttestation {
   hash: string;
 }
 
+export interface ExternalScanJobSummary {
+  jobId: string;
+  providerId: string;
+  deliveryKeyId: string;
+  state: ExternalScanJobState;
+  evidenceId: string;
+  evidenceVersion: number;
+  contentSha256: string;
+  sizeBytes: number;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  attempts: number;
+  deliveredAt: string | null;
+  completedAt: string | null;
+  deadLetteredAt: string | null;
+  result: Record<string, unknown> | null;
+}
+
 export interface EvidenceScreeningSummary {
   reportId: string;
   engineVersion: string;
@@ -51,6 +71,7 @@ export interface EvidenceScreeningSummary {
   reviewedAt: string | null;
   reviewAction: 'released' | 'rejected' | null;
   externalScan?: ExternalScanAttestation | null;
+  externalScanJob?: ExternalScanJobSummary | null;
 }
 
 export interface EvidenceVersion {
@@ -85,6 +106,7 @@ export interface EvidenceItem {
   versions: EvidenceVersion[];
   screening?: EvidenceScreeningSummary | { status: 'not-applicable' };
   externalScan?: ExternalScanAttestation | null;
+  externalScanJob?: ExternalScanJobSummary | null;
   legalHold: EvidenceLegalHoldSummary | null;
   disposedAt: string | null;
   disposedBy: string | null;
@@ -129,6 +151,20 @@ export interface ExternalScanStatus {
   error?: string;
 }
 
+export interface ExternalScanDeliveryStatus {
+  status: 'ready' | 'attention' | 'unavailable' | 'disabled';
+  enabled: boolean;
+  required: boolean;
+  mode: 'disabled' | 'pull';
+  total?: number;
+  pending?: number;
+  inflight?: number;
+  delivered?: number;
+  completed?: number;
+  deadLetters?: number;
+  error?: string;
+}
+
 export interface EvidenceIntegrityResult {
   valid: true;
   tenantId: string;
@@ -153,6 +189,11 @@ export interface EvidenceIntegrityResult {
     records: number;
     headSequence: number;
     headHash: string | null;
+  };
+  externalScanJobs?: {
+    valid: true;
+    tenantId: string;
+    checkedJobs: number;
   };
 }
 
@@ -190,6 +231,34 @@ export interface ExternalScanHealth {
   error?: string;
 }
 
+export interface ExternalScanDeliveryHealth {
+  status: 'ready' | 'degraded' | 'unavailable' | 'disabled';
+  enabled: boolean;
+  required: boolean;
+  mode: 'disabled' | 'pull';
+  durable?: boolean;
+  distributed?: boolean;
+  encryptedRecords?: boolean;
+  plaintextQueued?: false;
+  publicKeySealed?: boolean;
+  requestReplayProtected?: boolean;
+  expiryEnforced?: boolean;
+  providerCount?: number;
+  jobTtlMinutes?: number;
+  claimLeaseMs?: number;
+  maxAttempts?: number;
+  maxClaimBytes?: number;
+  estimatedMaximumPackageBytes?: number;
+  maximumClaimJobs?: number;
+  maintenance?: {
+    reconciled: number;
+    expiredPending: number;
+    expiredDelivered: number;
+  };
+  counts?: Record<ExternalScanJobState, number>;
+  error?: string;
+}
+
 export interface EvidenceHealth {
   status: 'ready' | 'attention' | 'unavailable' | 'disabled';
   enabled: boolean;
@@ -214,5 +283,6 @@ export interface EvidenceHealth {
   anchorSequence?: number;
   screening?: EvidenceScreeningHealth;
   externalScan?: ExternalScanHealth;
+  externalScanDelivery?: ExternalScanDeliveryHealth | ExternalScanDeliveryStatus;
   error?: string;
 }
