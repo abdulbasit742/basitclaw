@@ -1,6 +1,6 @@
 {
   "name": "basitclaw",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Workforce internal audit assurance and governance workspace.",
   "type": "module",
@@ -9,7 +9,7 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test",
-    "lint": "node --check src/server.js && node --check src/services/workforceAuditService.js && node --check src/services/workforceAuditRegistry.js && node --check src/services/governanceLedger.js && node --check src/security/accessControl.js",
+    "lint": "node --check src/server.js && node --check src/services/workforceAuditService.js && node --check src/services/workforceAuditRegistry.js && node --check src/services/governanceLedger.js && node --check src/security/accessControl.js && node --check src/persistence/encryptedSnapshotStore.js",
     "build": "node scripts/verify-build.js"
   }
 }

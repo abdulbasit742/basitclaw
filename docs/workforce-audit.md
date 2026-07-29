@@ -1,48 +1,46 @@
 # Workforce audit governance boundary
 
-This module separates audit planning readiness from audit conclusions and now enforces identity and tenant boundaries at the HTTP layer.
+This module separates audit planning readiness from audit conclusions and enforces identity, tenant, durability, and traceability boundaries.
 
 ## Identity and tenancy
 
 - Every `/api/workforce-audit/*` request requires `x-api-key`.
 - API keys resolve to a subject, tenant, and role.
-- The tenant comes only from the authenticated principal; `x-tenant-id` cannot override it.
-- Every tenant receives a separate service instance and mutation state.
-- Production startup fails when no API-key configuration is supplied.
+- The authenticated principal is the only source of tenant selection.
+- Every tenant receives a separate service instance and encrypted snapshot.
 
-## Role permissions
+## Durable mutation protocol
 
-| Role | Read | Engagement planning | Fieldwork | Findings | Governance history |
-|---|---:|---:|---:|---:|---:|
-| audit_viewer | Yes | No | No | No | No |
-| auditor | Yes | No | Yes | Yes | No |
-| audit_manager | Yes | Yes | Yes | Yes | Yes |
-| compliance_admin | Yes | Yes | Yes | Yes | Yes |
+1. Validate the requested audit operation.
+2. Capture a business-state and governance-ledger checkpoint.
+3. Apply the business mutation and append the actor-attributed governance event.
+4. Encrypt the complete tenant snapshot using AES-256-GCM.
+5. Write with restrictive permissions to a unique temporary file.
+6. Fsync the file, atomically rename it, and attempt to fsync the directory.
+7. Return success only after the durable write completes.
+8. Restore both business state and governance history if persistence fails.
 
-## Governance ledger
+## Encryption and rotation
 
-Every engagement, fieldwork-placeholder, and finding mutation appends a tenant-scoped governance event containing actor, action, entity, time, metadata, previous hash, and SHA-256 hash. `GET /api/workforce-audit/governance-integrity` verifies the complete tenant chain.
+- Each envelope identifies the encryption key used.
+- The tenant ID is never used as a filename; a SHA-256 tenant hash selects the file.
+- Tenant hash, format, version, algorithm, key ID, write time, and IV are authenticated as GCM additional data.
+- Older keys may be retained for reads while a new primary key handles writes.
+- Production startup fails when encryption keys or a primary key ID are missing.
 
-The in-memory chain is tamper-evident during the process lifetime, not durable. A production ledger must be persisted in append-only storage with restricted write paths and independent retention.
+## Persistence APIs
+
+- `GET /health` includes storage health and returns `503` when persistence is unavailable.
+- `GET /api/workforce-audit/persistence-health` exposes storage mode, active key ID, configured key IDs, and persisted tenant count to governance-authorised roles.
 
 ## Existing audit guardrails
 
 - Engagements require a valid audit-universe item, explicit scope, valid dates, a named lead auditor, and management approval.
-- Overlapping engagements for the same audit-universe item are blocked unless an earlier engagement is cancelled.
-- Fieldwork placeholders require an owner, reason, expiry date, and replacement evidence. They cannot remain open longer than 60 days.
-- Findings require traceable evidence. Placeholder references cannot support verified or closed status.
+- Overlapping engagements for the same audit-universe item are blocked.
+- Fieldwork placeholders require an owner, reason, expiry date, and replacement evidence, with a maximum 60-day lifetime.
+- Findings require traceable evidence; placeholder references cannot support verified or closed status.
 - External providers remain blocked until independence, security review, data-processing terms, delivery capacity, and current due diligence are satisfactory.
 
-## API surface
+## Deployment limitation
 
-- `GET /api/workforce-audit/session`
-- `GET /api/workforce-audit/overview`
-- `GET /api/workforce-audit/universe`
-- `GET /api/workforce-audit/engagements`
-- `POST /api/workforce-audit/engagements`
-- `POST /api/workforce-audit/engagements/:id/placeholders`
-- `GET /api/workforce-audit/findings`
-- `POST /api/workforce-audit/findings`
-- `GET /api/workforce-audit/providers`
-- `GET /api/workforce-audit/governance-events`
-- `GET /api/workforce-audit/governance-integrity`
+The current atomic file store assumes one writer process. Horizontal scaling requires a transactional shared persistence layer or a proven distributed locking protocol.

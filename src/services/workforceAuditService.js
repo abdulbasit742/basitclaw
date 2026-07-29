@@ -4,6 +4,7 @@ import {
   auditProviders,
   auditUniverse
 } from '../data/workforceAuditFixtures.js';
+import { PersistenceError } from '../persistence/encryptedSnapshotStore.js';
 
 const ALLOWED_SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);
 const CLOSED_STATUSES = new Set(['closed', 'verified']);
@@ -25,10 +26,16 @@ export class NotFoundError extends Error {
   }
 }
 
-export function createWorkforceAuditService({ now = () => new Date(), tenantId = 'tenant-demo', ledger = null } = {}) {
+export function createWorkforceAuditService({
+  now = () => new Date(),
+  tenantId = 'tenant-demo',
+  ledger = null,
+  initialState = null,
+  persist = null
+} = {}) {
   validateTenantId(tenantId);
-  const engagements = structuredClone(seededEngagements);
-  const findings = structuredClone(seededFindings);
+  let engagements = structuredClone(initialState?.engagements ?? seededEngagements);
+  let findings = structuredClone(initialState?.findings ?? seededFindings);
 
   function getUniverse() {
     return auditUniverse.map((item) => ({
@@ -48,6 +55,10 @@ export function createWorkforceAuditService({ now = () => new Date(), tenantId =
 
   function getProviders() {
     return auditProviders.map((provider) => assessProviderReadiness(provider, now()));
+  }
+
+  function exportState() {
+    return { engagements: structuredClone(engagements), findings: structuredClone(findings) };
   }
 
   function getOverview() {
@@ -91,7 +102,6 @@ export function createWorkforceAuditService({ now = () => new Date(), tenantId =
     if (input.managementApproved !== true) {
       throw new ValidationError('Management approval is required before an engagement can enter the plan.', { field: 'managementApproved' });
     }
-
     const overlap = engagements.find((item) => item.universeItemId === input.universeItemId && new Date(item.startDate) <= endDate && new Date(item.endDate) >= startDate && item.status !== 'cancelled');
     if (overlap) {
       throw new ValidationError('An overlapping engagement already exists for this audit-universe item.', { conflictingEngagementId: overlap.id });
@@ -110,13 +120,16 @@ export function createWorkforceAuditService({ now = () => new Date(), tenantId =
       status: 'planned',
       fieldworkPlaceholders: []
     };
-    engagements.push(engagement);
-    recordGovernance('engagement.created', 'engagement', engagement.id, context, {
-      universeItemId: engagement.universeItemId,
-      startDate: engagement.startDate,
-      endDate: engagement.endDate
+
+    return commitMutation(() => {
+      engagements.push(engagement);
+      recordGovernance('engagement.created', 'engagement', engagement.id, context, {
+        universeItemId: engagement.universeItemId,
+        startDate: engagement.startDate,
+        endDate: engagement.endDate
+      });
+      return structuredClone(engagement);
     });
-    return structuredClone(engagement);
   }
 
   function addFieldworkPlaceholder(engagementId, input, context = {}) {
@@ -139,14 +152,17 @@ export function createWorkforceAuditService({ now = () => new Date(), tenantId =
       replacementEvidenceRequired: true,
       status: 'open'
     };
-    engagement.fieldworkPlaceholders ??= [];
-    engagement.fieldworkPlaceholders.push(placeholder);
-    recordGovernance('fieldwork.placeholder.created', 'fieldwork_placeholder', placeholder.id, context, {
-      engagementId,
-      expiresAt: placeholder.expiresAt,
-      replacementEvidenceRequired: true
+
+    return commitMutation(() => {
+      engagement.fieldworkPlaceholders ??= [];
+      engagement.fieldworkPlaceholders.push(placeholder);
+      recordGovernance('fieldwork.placeholder.created', 'fieldwork_placeholder', placeholder.id, context, {
+        engagementId,
+        expiresAt: placeholder.expiresAt,
+        replacementEvidenceRequired: true
+      });
+      return structuredClone(placeholder);
     });
-    return structuredClone(placeholder);
   }
 
   function createFinding(input, context = {}) {
@@ -177,14 +193,34 @@ export function createWorkforceAuditService({ now = () => new Date(), tenantId =
       status: input.status ?? 'draft'
     };
     parseDate(finding.dueDate, 'dueDate');
-    findings.push(finding);
-    recordGovernance('finding.created', 'finding', finding.id, context, {
-      engagementId: finding.engagementId,
-      severity: finding.severity,
-      dueDate: finding.dueDate,
-      evidenceCount: finding.evidenceRefs.length
+
+    return commitMutation(() => {
+      findings.push(finding);
+      recordGovernance('finding.created', 'finding', finding.id, context, {
+        engagementId: finding.engagementId,
+        severity: finding.severity,
+        dueDate: finding.dueDate,
+        evidenceCount: finding.evidenceRefs.length
+      });
+      return structuredClone(finding);
     });
-    return structuredClone(finding);
+  }
+
+  function commitMutation(mutator) {
+    const previousState = exportState();
+    const ledgerCheckpoint = ledger?.checkpoint(tenantId) ?? 0;
+    try {
+      const result = mutator();
+      persist?.(exportState());
+      return result;
+    } catch (error) {
+      engagements = previousState.engagements;
+      findings = previousState.findings;
+      ledger?.rollbackTo(tenantId, ledgerCheckpoint);
+      if (error instanceof PersistenceError) throw error;
+      if (error?.code === 'PERSISTENCE_UNAVAILABLE') throw error;
+      throw error;
+    }
   }
 
   function recordGovernance(action, entityType, entityId, context, metadata) {
@@ -199,7 +235,17 @@ export function createWorkforceAuditService({ now = () => new Date(), tenantId =
     });
   }
 
-  return { getOverview, getUniverse, getEngagements, getFindings, getProviders, createEngagement, addFieldworkPlaceholder, createFinding };
+  return {
+    getOverview,
+    getUniverse,
+    getEngagements,
+    getFindings,
+    getProviders,
+    exportState,
+    createEngagement,
+    addFieldworkPlaceholder,
+    createFinding
+  };
 }
 
 export function calculateUniverseReadiness(item) {

@@ -9,18 +9,6 @@ export interface AuditPrincipal {
   permissions: string[];
 }
 
-export interface AuditUniverseItem {
-  id: string;
-  name: string;
-  owner: string;
-  riskTier: RiskTier;
-  lastReviewedAt: string;
-  evidenceCoverage: number;
-  controlCoverage: number;
-  openFindings: number;
-  status: 'ready' | 'attention';
-}
-
 export interface AuditEngagement {
   id: string;
   universeItemId: string;
@@ -69,4 +57,25 @@ export interface GovernanceEvent {
   metadata: Record<string, unknown>;
   previousHash: string | null;
   hash: string;
+}
+
+export interface WorkforceAuditSnapshot {
+  schemaVersion: 1;
+  tenantId: string;
+  savedAt: string;
+  state: {
+    engagements: AuditEngagement[];
+    findings: AuditFinding[];
+  };
+  governanceEvents: GovernanceEvent[];
+}
+
+export interface PersistenceHealth {
+  status: 'ready' | 'unavailable';
+  mode: 'encrypted-file';
+  directory: string;
+  primaryKeyId: string;
+  configuredKeyIds: string[];
+  persistedTenantCount: number;
+  error?: string;
 }
