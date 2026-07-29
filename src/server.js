@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { PersistenceError } from './persistence/encryptedSnapshotStore.js';
 import { AuthenticationError, AuthorizationError, createAccessController } from './security/accessControl.js';
 import { createWorkforceAuditRegistry } from './services/workforceAuditRegistry.js';
 import { NotFoundError, ValidationError } from './services/workforceAuditService.js';
@@ -17,7 +18,13 @@ export function createApp({
     const requestId = randomUUID();
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
-        return sendJson(res, 200, { success: true, data: { status: 'ok' }, meta: { requestId } }, requestId);
+        const persistence = registry.getPersistenceHealth();
+        const status = persistence.status === 'ready' ? 200 : 503;
+        return sendJson(res, status, {
+          success: status === 200,
+          data: { status: status === 200 ? 'ok' : 'degraded', persistence },
+          meta: { requestId }
+        }, requestId);
       }
       if (req.method === 'GET' && url.pathname === '/dashboard/workforce-audit') {
         const html = await readFile(dashboardPath, 'utf8');
@@ -74,6 +81,10 @@ export function createApp({
         accessController.authorise(principal, 'governance:read');
         return sendJson(res, 200, { success: true, data: registry.verifyGovernanceIntegrity(principal.tenantId), meta }, requestId);
       }
+      if (req.method === 'GET' && url.pathname === '/api/workforce-audit/persistence-health') {
+        accessController.authorise(principal, 'governance:read');
+        return sendJson(res, 200, { success: true, data: registry.getPersistenceHealth(), meta }, requestId);
+      }
       if (req.method === 'POST' && url.pathname === '/api/workforce-audit/engagements') {
         accessController.authorise(principal, 'engagement:write');
         const data = service.createEngagement(await readJson(req), context);
@@ -105,6 +116,14 @@ export function createApp({
       }
       if (error instanceof NotFoundError) {
         return sendJson(res, 404, { success: false, error: error.message, code: error.code, meta: { requestId } }, requestId);
+      }
+      if (error instanceof PersistenceError || error?.code === 'PERSISTENCE_UNAVAILABLE') {
+        return sendJson(res, 503, {
+          success: false,
+          error: 'The audit change could not be committed to durable storage.',
+          code: 'PERSISTENCE_UNAVAILABLE',
+          meta: { requestId }
+        }, requestId);
       }
       if (error?.code === 'INVALID_JSON') {
         return sendJson(res, 400, { success: false, error: error.message, code: 'INVALID_JSON', meta: { requestId } }, requestId);

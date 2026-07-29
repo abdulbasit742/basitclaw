@@ -2,13 +2,14 @@ import { createHash } from 'node:crypto';
 
 export function createGovernanceLedger({ now = () => new Date() } = {}) {
   const events = [];
+  const importedTenants = new Set();
 
   function append(input) {
     assertEventInput(input);
     const tenantEvents = events.filter((event) => event.tenantId === input.tenantId);
     const previousHash = tenantEvents.at(-1)?.hash ?? null;
     const event = {
-      id: `GEV-${String(events.length + 1).padStart(8, '0')}`,
+      id: `GEV-${input.tenantId}-${String(tenantEvents.length + 1).padStart(8, '0')}`,
       sequence: tenantEvents.length + 1,
       tenantId: input.tenantId,
       actor: input.actor,
@@ -24,37 +25,74 @@ export function createGovernanceLedger({ now = () => new Date() } = {}) {
     return structuredClone(stored);
   }
 
+  function importTenant(tenantId, importedEvents = []) {
+    assertIdentifier(tenantId, 'tenantId');
+    if (importedTenants.has(tenantId)) return;
+    if (!Array.isArray(importedEvents)) throw new TypeError('Imported governance events must be an array.');
+    const clones = importedEvents.map((event) => Object.freeze(structuredClone(event)));
+    for (const event of clones) {
+      if (event.tenantId !== tenantId) throw new TypeError('Imported governance event belongs to another tenant.');
+    }
+    const verification = verifyEvents(clones);
+    if (!verification.valid) throw new TypeError(`Imported governance chain is invalid at ${verification.failedEventId}.`);
+    events.push(...clones);
+    importedTenants.add(tenantId);
+  }
+
   function list(tenantId, { limit = 100 } = {}) {
     assertIdentifier(tenantId, 'tenantId');
     const safeLimit = Math.max(1, Math.min(500, Number(limit) || 100));
-    return events.filter((event) => event.tenantId === tenantId).slice(-safeLimit).map((event) => structuredClone(event));
+    return exportTenant(tenantId).slice(-safeLimit);
+  }
+
+  function exportTenant(tenantId) {
+    assertIdentifier(tenantId, 'tenantId');
+    return events.filter((event) => event.tenantId === tenantId).map((event) => structuredClone(event));
   }
 
   function verify(tenantId) {
     const tenantEvents = events.filter((event) => event.tenantId === tenantId);
-    let expectedPreviousHash = null;
-    for (const event of tenantEvents) {
-      const { hash, ...unsigned } = event;
-      if (event.previousHash !== expectedPreviousHash || hashEvent(unsigned) !== hash) {
-        return { valid: false, checkedEvents: tenantEvents.length, failedEventId: event.id, headHash: tenantEvents.at(-1)?.hash ?? null };
-      }
-      expectedPreviousHash = hash;
-    }
-    return { valid: true, checkedEvents: tenantEvents.length, failedEventId: null, headHash: tenantEvents.at(-1)?.hash ?? null };
+    return verifyEvents(tenantEvents);
   }
 
-  return { append, list, verify };
+  function checkpoint(tenantId) {
+    return events.filter((event) => event.tenantId === tenantId).length;
+  }
+
+  function rollbackTo(tenantId, checkpointLength) {
+    let seen = 0;
+    for (let index = 0; index < events.length; index += 1) {
+      if (events[index].tenantId !== tenantId) continue;
+      seen += 1;
+      if (seen > checkpointLength) {
+        events.splice(index, 1);
+        index -= 1;
+      }
+    }
+  }
+
+  return { append, importTenant, list, exportTenant, verify, checkpoint, rollbackTo };
 }
 
 export function hashEvent(event) {
   return createHash('sha256').update(stableStringify(event)).digest('hex');
 }
 
+function verifyEvents(tenantEvents) {
+  let expectedPreviousHash = null;
+  for (const event of tenantEvents) {
+    const { hash, ...unsigned } = event;
+    if (event.previousHash !== expectedPreviousHash || hashEvent(unsigned) !== hash) {
+      return { valid: false, checkedEvents: tenantEvents.length, failedEventId: event.id, headHash: tenantEvents.at(-1)?.hash ?? null };
+    }
+    expectedPreviousHash = hash;
+  }
+  return { valid: true, checkedEvents: tenantEvents.length, failedEventId: null, headHash: tenantEvents.at(-1)?.hash ?? null };
+}
+
 function assertEventInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('Governance event input must be an object.');
-  for (const field of ['tenantId', 'actor', 'action', 'entityType', 'entityId']) {
-    assertIdentifier(input[field], field);
-  }
+  for (const field of ['tenantId', 'actor', 'action', 'entityType', 'entityId']) assertIdentifier(input[field], field);
 }
 
 function assertIdentifier(value, field) {

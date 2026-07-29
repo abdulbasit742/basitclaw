@@ -9,7 +9,7 @@
     * { box-sizing: border-box; }
     body { margin: 0; }
     header { padding: 28px clamp(20px, 5vw, 72px); background: #102a43; color: white; }
-    header p { max-width: 760px; color: #d9e2ec; }
+    header p { max-width: 820px; color: #d9e2ec; }
     main { padding: 24px clamp(20px, 5vw, 72px) 60px; }
     .auth, .grid { display: grid; gap: 16px; }
     .auth { grid-template-columns: minmax(220px, 1fr) auto; align-items: end; margin-bottom: 20px; }
@@ -34,7 +34,7 @@
 <body>
 <header>
   <h1>Workforce Audit Assurance</h1>
-  <p>Tenant-isolated audit readiness, governed fieldwork, finding traceability, provider assurance, and immutable change history.</p>
+  <p>Tenant-isolated audit readiness, governed fieldwork, finding traceability, provider assurance, encrypted persistence, and tamper-evident change history.</p>
 </header>
 <main>
   <form id="auth" class="auth">
@@ -70,19 +70,21 @@
   async function load() {
     document.querySelector('#error').textContent = '';
     try {
-      const [session, overview, universe, engagements, providers] = await Promise.all([
+      const [session, overview, universe, engagements, providers, persistence] = await Promise.all([
         secureFetch('/api/workforce-audit/session'),
         secureFetch('/api/workforce-audit/overview'),
         secureFetch('/api/workforce-audit/universe'),
         secureFetch('/api/workforce-audit/engagements'),
-        secureFetch('/api/workforce-audit/providers')
+        secureFetch('/api/workforce-audit/providers'),
+        secureFetch('/api/workforce-audit/persistence-health').catch(() => null)
       ]);
       document.querySelector('#identity').textContent = `${session.subject} · ${session.role} · ${session.tenantId}`;
       const cards = [
         ['Audit areas ready', `${overview.universe.ready}/${overview.universe.total}`],
         ['Active engagements', overview.engagements.active],
         ['High-risk findings', overview.findings.criticalOrHigh],
-        ['Ready providers', `${overview.providers.ready}/${overview.providers.total}`]
+        ['Ready providers', `${overview.providers.ready}/${overview.providers.total}`],
+        ['Encrypted storage', persistence?.status ?? 'restricted']
       ];
       document.querySelector('#metrics').innerHTML = cards.map(([label, value]) => `<article class="card"><div class="muted">${escapeHtml(label)}</div><div class="metric">${escapeHtml(value)}</div></article>`).join('');
       document.querySelector('#universe').innerHTML = universe.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.riskTier)}</td><td>${escapeHtml(item.owner)}</td><td><span class="badge ${item.readinessScore < 80 ? 'attention' : ''}">${escapeHtml(item.readinessScore)}%</span></td><td>${escapeHtml(item.openFindings)}</td></tr>`).join('');
