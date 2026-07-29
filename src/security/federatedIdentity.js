@@ -11,7 +11,7 @@ export function deriveFederatedSubject(issuer, externalSubject) {
   });
 }
 
-function exactIssuer(value) {
+export function exactIssuer(value) {
   let url;
   try { url = new URL(String(value ?? '')); } catch { throw new TypeError('issuer must be a valid URL.'); }
   if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) {
