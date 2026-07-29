@@ -15,6 +15,7 @@ const requiredFiles = [
   'src/services/governanceLedger.js',
   'public/workforce-audit.html',
   'src/types/workforceAudit.d.ts',
+  'src/types/coordination.d.ts',
   '.github/workflows/ci.yml'
 ];
 
@@ -46,7 +47,7 @@ for (const marker of ['PERSISTENCE_FENCE_REJECTED', 'snapshot.fenced', 'latestFe
 }
 
 const coordinatedRegistry = await readFile(new URL('../src/coordination/coordinatedRegistry.js', import.meta.url), 'utf8');
-for (const marker of ['createRuntimeWorkforceAuditRegistry', 'createReadOnlyStore', 'coordination', 'fresh']) {
+for (const marker of ['createRuntimeWorkforceAuditRegistry', 'createReadOnlyStore', 'getCoordinationStatus', 'createRegistry']) {
   if (!coordinatedRegistry.includes(marker)) throw new Error(`Coordinated registry build verification failed: missing ${marker}.`);
 }
 
