@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { createSecurityAlertRuntimeFromEnvironment } from './securityAlertRuntime.js';
 
 export function createSecurityTelemetry({
   now = () => new Date(),
@@ -101,6 +102,10 @@ export function createSecurityTelemetry({
     };
     const archiveFailure = archiveHealth.required && archiveHealth.status !== 'ready';
     const alertFailure = alertHealth.required && alertHealth.status !== 'ready';
+    const evidenceRequired = Boolean(archiveHealth.required || alertHealth.required);
+    const evidenceStatus = archiveFailure || alertFailure
+      ? 'unavailable'
+      : evidenceRequired ? 'ready' : archiveHealth.status;
     return {
       status: archiveFailure || alertFailure ? 'unavailable' : 'ready',
       mode: archiveHealth.enabled ? 'bounded-memory-plus-encrypted-archive' : 'bounded-memory-hash-chain',
@@ -115,6 +120,9 @@ export function createSecurityTelemetry({
       integrity: verify(),
       archive: {
         ...archiveHealth,
+        status: evidenceStatus,
+        required: evidenceRequired,
+        archiveOnlyStatus: archiveHealth.status,
         failures: archiveFailures,
         lastError: lastArchiveError
       },
@@ -150,12 +158,13 @@ export function createSecurityTelemetryFromEnvironment(
   { archive = null, alertDispatcher = null } = {}
 ) {
   const configuredPepper = env.WORKFORCE_AUDIT_SECURITY_EVENT_PEPPER;
+  const delivery = alertDispatcher ?? createSecurityAlertRuntimeFromEnvironment(env);
   return createSecurityTelemetry({
     pepper: configuredPepper ?? randomBytes(32).toString('base64'),
     ephemeralPepper: !configuredPepper,
     maxEvents: Number(env.WORKFORCE_AUDIT_SECURITY_EVENT_RETENTION ?? 2000),
     archive,
-    alertDispatcher
+    alertDispatcher: delivery
   });
 }
 
