@@ -24,7 +24,8 @@ const requiredFiles = [
   'docs/api-security.md', 'docs/identity-federation.md', 'docs/identity-provisioning.md',
   'docs/security-alert-delivery.md', 'docs/security-key-rotation.md', '.github/workflows/ci.yml',
   'test/identityEntitlementRegistry.test.js', 'test/authenticationEntitlements.test.js',
-  'test/scimProvisioning.test.js', 'test/identityLifecycleRuntime.test.js'
+  'test/scimAccessController.test.js', 'test/scimProvisioning.test.js',
+  'test/identityLifecycleRuntime.test.js', 'test/dashboardIdentityLifecycle.test.js'
 ];
 
 for (const file of requiredFiles) await access(new URL(`../${file}`, import.meta.url));
@@ -45,15 +46,15 @@ await requireMarkers('src/coordination/coordinatedRegistry.js', 'Coordinated reg
 await requireMarkers('src/resilience/resilienceScheduler.js', 'Scheduler', ['WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES', 'runResilienceCycle', 'unref']);
 await requireMarkers('src/security/accessControl.js', 'Credential', ['scryptSync', 'CREDENTIAL_REVOKED', 'credentialHealth', 'rotationRequired']);
 await requireMarkers('src/security/authenticationGateway.js', 'Authentication gateway', ['api-key', 'oidc', 'hybrid', 'entitlementRegistry', 'identityEntitlements']);
-await requireMarkers('src/security/federatedIdentity.js', 'Federated identity', ['deriveFederatedSubject', 'externalSubjectHash', 'sha256']);
+await requireMarkers('src/security/federatedIdentity.js', 'Federated identity', ['deriveFederatedSubject', 'externalSubjectHash', 'exactIssuer']);
 await requireMarkers('src/security/oidcAuthenticator.js', 'OIDC authenticator', ['RS256', 'ES256', 'OIDC_AUDIENCE_INVALID', 'OIDC_TENANT_NOT_ALLOWED', 'OIDC_AMR_REQUIRED', 'JWKS response exceeds']);
-await requireMarkers('src/security/identityEntitlementRegistry.js', 'Identity entitlement registry', ['aes-256-gcm', 'IDENTITY_NOT_PROVISIONED', 'IDENTITY_REVIEW_OVERDUE', 'eventAnchorHash', 'WORKFORCE_AUDIT_IDENTITY_STORE_KEYS']);
-await requireMarkers('src/security/scimAccessController.js', 'SCIM access', ['scryptSync', 'SCIM_CREDENTIAL_REVOKED', 'scim:write', 'WORKFORCE_AUDIT_SCIM_CREDENTIALS']);
-await requireMarkers('src/security/scimHandler.js', 'SCIM protocol', ['/scim/v2/Users', 'If-Match', 'WORKFORCE_EXTENSION', 'identity.deprovisioned']);
+await requireMarkers('src/security/identityEntitlementRegistry.js', 'Identity entitlement registry', ['aes-256-gcm', 'IDENTITY_NOT_PROVISIONED', 'IDENTITY_REVIEW_OVERDUE', 'reviewStatus', 'WORKFORCE_AUDIT_IDENTITY_STORE_KEYS']);
+await requireMarkers('src/security/scimAccessController.js', 'SCIM access', ['scrypt(', 'SCIM_CREDENTIAL_REVOKED', 'explicit scopes array', 'WORKFORCE_AUDIT_SCIM_CREDENTIALS']);
+await requireMarkers('src/security/scimHandler.js', 'SCIM protocol', ['/scim/v2/Users', 'If-Match', 'WORKFORCE_EXTENSION', 'identity.deprovisioned', 'invalid percent encoding']);
 await requireMarkers('src/federatedServer.js', 'Federated server', ['createScimHandler', 'IdentityEntitlementStoreError', 'identity.entitlement_denied', 'authenticatedRequests']);
-await requireMarkers('src/runtime.js', 'Runtime', ['prepareIdentityProvider', 'prepareIdentityLifecycle', 'SCIM_UNAVAILABLE', 'startRuntime']);
-await requireMarkers('scripts/identity-check.js', 'Identity preflight', ['identityEntitlements', 'scim', 'IDENTITY_CHECK_FAILED']);
-await requireMarkers('scripts/generate-scim-credential.js', 'SCIM credential generator', ['presentedToken', 'scryptSync', 'SCIM_CREDENTIAL_GENERATION_FAILED']);
+await requireMarkers('src/runtime.js', 'Runtime', ['prepareIdentityProvider', 'prepareIdentityLifecycle', 'registryReady', 'SCIM_UNAVAILABLE', 'startRuntime']);
+await requireMarkers('scripts/identity-check.js', 'Identity preflight', ['runIdentityCheck', 'identityEntitlements', 'scim']);
+await requireMarkers('scripts/generate-scim-credential.js', 'SCIM credential generator', ['presentedToken', 'parseScimCredentialArguments', '--scopes', 'secret manager']);
 await requireMarkers('scripts/identity-entitlements.js', 'Identity lifecycle CLI', ['review-status', 'listEvents', 'IDENTITY_ENTITLEMENT_COMMAND_FAILED']);
 await requireMarkers('src/security/rateLimiter.js', 'Rate limit', ['RATE_LIMITED', 'shared-file', 'WORKFORCE_AUDIT_DISTRIBUTED_RATE_LIMIT_REQUIRED', 'WORKFORCE_AUDIT_TRUST_PROXY_HOPS']);
 await requireMarkers('src/security/sharedRateLimiter.js', 'Shared rate limit', ['shared-file-fixed-window', 'RATE_LIMIT_STORE_UNAVAILABLE', 'identityHash', 'atomicWriteJson']);
@@ -71,6 +72,6 @@ await requireMarkers('docs/identity-provisioning.md', 'Identity provisioning run
 await requireMarkers('docs/security-alert-delivery.md', 'Security alert runbook', ['at least once', 'x-basitclaw-key-id', 'dead-letter', 'deduplicate']);
 await requireMarkers('docs/security-key-rotation.md', 'Security key rotation runbook', ['archive-can-retire', 'alert-can-retire', '--receiver-confirmed', 'missingKeyIds']);
 await requireMarkers('src/server.js', 'Server', ['/backups', 'backup:restore', 'security-archive-events', 'security-archive-integrity', 'RateLimitStoreError', 'publicSecurityHealth']);
-await requireMarkers('public/workforce-audit.html', 'Dashboard', ['OIDC bearer token', 'Authentication mode', 'Federated identity', 'JWKS cache', 'API Security Events']);
+await requireMarkers('public/workforce-audit.html', 'Dashboard', ['OIDC bearer token', 'Identity lifecycle', 'Review posture', 'Reviews overdue', 'API Security Events']);
 
 console.log('Build verification passed.');
