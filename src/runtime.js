@@ -42,6 +42,15 @@ export function prepareIdentityLifecycle({ app, env = process.env } = {}) {
     error.details = entitlementHealth;
     throw error;
   }
+
+  const privilegedHealth = app?.privilegedAccess?.health?.() ?? { status: 'disabled', enabled: false, required: false };
+  if (privilegedHealth.required && privilegedHealth.status !== 'ready') {
+    const error = new Error('The required privileged-access lifecycle is not ready.');
+    error.code = 'PRIVILEGED_ACCESS_STORE_UNAVAILABLE';
+    error.details = privilegedHealth;
+    throw error;
+  }
+
   const scimHealth = app?.scimHandler?.health?.() ?? { registry: entitlementHealth, credentials: { status: 'disabled', enabled: false } };
   const scimEnabled = String(env.WORKFORCE_AUDIT_SCIM_ENABLED ?? 'false') === 'true';
   const registryReady = scimHealth.registry?.status === 'ready';
@@ -51,7 +60,7 @@ export function prepareIdentityLifecycle({ app, env = process.env } = {}) {
     error.details = scimHealth;
     throw error;
   }
-  return { entitlementHealth, scimHealth };
+  return { entitlementHealth, privilegedHealth, scimHealth };
 }
 
 export async function startRuntime({

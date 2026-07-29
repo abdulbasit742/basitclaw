@@ -35,7 +35,7 @@
 <body>
 <header>
   <h1>Workforce Audit Assurance</h1>
-  <p>Tenant-isolated audit readiness with enterprise bearer authentication, governed SCIM identity provisioning, lifecycle-managed credentials and evidence keys, encrypted persistence, governed recovery, fenced writes, distributed abuse controls, encrypted evidence, and signed security alert delivery.</p>
+  <p>Tenant-isolated audit readiness with enterprise federation, governed identity provisioning, time-boxed privileged access, encrypted persistence, governed recovery, fenced writes, distributed abuse controls, encrypted evidence, and signed security alerts.</p>
 </header>
 <main>
   <form id="auth" class="auth">
@@ -113,7 +113,8 @@
       const canReadResilience = session.permissions.includes('resilience:read');
       const canReadCoordination = session.permissions.includes('coordination:read');
       const canReadSecurity = session.permissions.includes('security:read');
-      const [overview, universe, engagements, providers, persistence, backups, replicas, resilience, coordination, security, securityEvents] = await Promise.all([
+      const canReadPrivileged = session.permissions.includes('privileged:read');
+      const [overview, universe, engagements, providers, persistence, backups, replicas, resilience, coordination, security, securityEvents, privileged] = await Promise.all([
         secureFetch('/api/workforce-audit/overview'), secureFetch('/api/workforce-audit/universe'),
         secureFetch('/api/workforce-audit/engagements'), secureFetch('/api/workforce-audit/providers'),
         secureFetch('/api/workforce-audit/persistence-health').catch(() => null),
@@ -122,16 +123,19 @@
         canReadResilience ? secureFetch('/api/workforce-audit/resilience-status').catch(() => null) : Promise.resolve(null),
         canReadCoordination ? secureFetch('/api/workforce-audit/coordination-status').catch(() => null) : Promise.resolve(null),
         canReadSecurity ? secureFetch('/api/workforce-audit/security-status').catch(() => null) : Promise.resolve(null),
-        canReadSecurity ? secureFetch('/api/workforce-audit/security-events?limit=50').catch(() => null) : Promise.resolve(null)
+        canReadSecurity ? secureFetch('/api/workforce-audit/security-events?limit=50').catch(() => null) : Promise.resolve(null),
+        canReadPrivileged ? secureFetch('/api/workforce-audit/privileged-access/status').catch(() => null) : Promise.resolve(null)
       ]);
       const rotationNotice = session.rotationRequired ? ' · rotation required' : '';
       const entitlementNotice = session.entitlementStatus ? ` · ${session.entitlementStatus}` : '';
-      document.querySelector('#identity').textContent = `${session.subject} · ${session.role} · ${session.tenantId} · ${session.authMethod || 'api_key'}${entitlementNotice}${rotationNotice}`;
+      const grantNotice = session.privilegedAccess?.status === 'active' ? ` · JIT until ${session.privilegedAccess.expiresAt}` : '';
+      document.querySelector('#identity').textContent = `${session.subject} · ${session.role} · ${session.tenantId} · ${session.authMethod || 'api_key'}${entitlementNotice}${rotationNotice}${grantNotice}`;
       const alertDelivery = security?.telemetry?.alertDelivery;
       const archiveKeys = security?.telemetry?.keyLifecycle?.archive;
       const alertKeys = security?.telemetry?.keyLifecycle?.alertSigning;
       const oidc = security?.credentials?.oidc;
       const entitlements = security?.credentials?.identityEntitlements;
+      const privilegedHealth = privileged ?? security?.credentials?.privilegedAccess;
       const cards = [
         ['Audit areas ready', `${overview.universe.ready}/${overview.universe.total}`],
         ['Active engagements', overview.engagements.active], ['High-risk findings', overview.findings.criticalOrHigh],
@@ -143,6 +147,11 @@
         ['Provisioned identities', entitlements?.total ?? 'restricted'],
         ['Suspended identities', entitlements?.suspended ?? 'restricted'],
         ['Reviews overdue', entitlements?.overdue ?? 'restricted'],
+        ['Privileged access', privilegedHealth?.mode ?? 'restricted'],
+        ['JIT grants active', privilegedHealth?.active ?? 'restricted'],
+        ['JIT requests pending', privilegedHealth?.pending ?? 'restricted'],
+        ['Break-glass active', privilegedHealth?.breakGlassActive ?? 'restricted'],
+        ['Break-glass reviews overdue', privilegedHealth?.overduePostReviews ?? 'restricted'],
         ['Encrypted storage', persistence?.status ?? 'restricted'], ['Recovery points', backups ? backups.length : 'restricted'],
         ['Replica status', resilience?.replicaHealth?.status ?? 'restricted'], ['Recovery drill', resilience?.drill?.status ?? 'restricted'],
         ['Write coordination', coordination?.enabled ? coordination.status : 'disabled'],

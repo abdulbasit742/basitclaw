@@ -12,6 +12,13 @@ import {
   createDisabledIdentityEntitlementRegistry,
   createIdentityEntitlementRegistryFromEnvironment
 } from './identityEntitlementRegistry.js';
+import { createPrivilegedAccessAdapter } from './privilegedAccessAdapter.js';
+import {
+  PrivilegedAccessError,
+  PrivilegedAccessStoreError,
+  createDisabledPrivilegedAccessRegistry,
+  createPrivilegedAccessRegistryFromEnvironment
+} from './privilegedAccessRegistry.js';
 
 const AUTH_MODES = new Set(['api-key', 'oidc', 'hybrid']);
 
@@ -20,7 +27,8 @@ export function createAuthenticationGateway({
   apiKeyController = null,
   oidcAuthenticator = null,
   oidcAllowedTenants = [],
-  entitlementRegistry = null
+  entitlementRegistry = null,
+  privilegedAccessRegistry = null
 } = {}) {
   const authenticationMode = String(mode);
   if (!AUTH_MODES.has(authenticationMode)) throw new TypeError('Authentication mode must be api-key, oidc, or hybrid.');
@@ -28,6 +36,9 @@ export function createAuthenticationGateway({
   if (authenticationMode !== 'api-key' && !oidcAuthenticator) throw new TypeError('OIDC authentication is required by the configured authentication mode.');
   const knownOidcTenants = new Set(oidcAllowedTenants.map((value) => String(value).trim()).filter(Boolean));
   const entitlements = entitlementRegistry ?? createDisabledIdentityEntitlementRegistry();
+  const privilegedAccess = createPrivilegedAccessAdapter(
+    privilegedAccessRegistry ?? createDisabledPrivilegedAccessRegistry()
+  );
 
   async function authenticate(req) {
     const apiKey = headerValue(req.headers?.['x-api-key']);
@@ -78,23 +89,50 @@ export function createAuthenticationGateway({
         permission
       });
     }
-    return principal;
+    try {
+      return privilegedAccess.authorise(principal, permission);
+    } catch (error) {
+      if (error instanceof PrivilegedAccessStoreError) {
+        const unavailable = new Error(error.message);
+        unavailable.code = 'PERSISTENCE_UNAVAILABLE';
+        unavailable.details = { ...error.details, control: 'privileged_access' };
+        throw unavailable;
+      }
+      if (error instanceof PrivilegedAccessError) {
+        throw new AuthorizationError(error.message, {
+          reason: error.code,
+          keyId: principal?.keyId ?? null,
+          permission,
+          privilegedAccess: error.details
+        });
+      }
+      throw error;
+    }
   }
 
   function tenantIds() {
     const apiTenants = typeof apiKeyController?.tenantIds === 'function' ? apiKeyController.tenantIds() : [];
     const provisionedTenants = typeof entitlements.tenantIds === 'function' ? entitlements.tenantIds() : [];
-    return [...new Set([...apiTenants, ...knownOidcTenants, ...provisionedTenants])];
+    let privilegedTenants = [];
+    if (typeof privilegedAccess.tenantIds === 'function') {
+      try { privilegedTenants = privilegedAccess.tenantIds(); }
+      catch (error) {
+        if (!(error instanceof PrivilegedAccessStoreError)) throw error;
+      }
+    }
+    return [...new Set([...apiTenants, ...knownOidcTenants, ...provisionedTenants, ...privilegedTenants])];
   }
 
   function credentialHealth() {
     const apiKeys = apiKeyController?.credentialHealth?.() ?? disabledApiKeyHealth();
     const oidc = oidcAuthenticator?.health?.() ?? disabledOidcHealth();
     const identityEntitlements = entitlements.health?.() ?? { status: 'disabled', enabled: false, required: false, mode: 'disabled' };
+    const privilegedAccessHealth = privilegedAccess.health?.() ?? { status: 'disabled', enabled: false, required: false, mode: 'disabled' };
     const enabledHealth = [
       ...(authenticationMode !== 'oidc' ? [apiKeys.status] : []),
       ...(authenticationMode !== 'api-key' ? [oidc.status] : []),
-      ...(identityEntitlements.required ? [identityEntitlements.status] : [])
+      ...(identityEntitlements.required ? [identityEntitlements.status] : []),
+      ...(privilegedAccessHealth.required ? [privilegedAccessHealth.status] : [])
     ];
     const status = enabledHealth.every((value) => value === 'ready') ? 'ready' : 'unavailable';
     return {
@@ -103,7 +141,8 @@ export function createAuthenticationGateway({
       authenticationMode,
       apiKeys,
       oidc,
-      identityEntitlements
+      identityEntitlements,
+      privilegedAccess: privilegedAccessHealth
     };
   }
 
@@ -116,7 +155,8 @@ export function createAuthenticationGateway({
     mode: authenticationMode,
     apiKeyController,
     oidcAuthenticator,
-    entitlementRegistry: entitlements
+    entitlementRegistry: entitlements,
+    privilegedAccessRegistry: privilegedAccess
   };
 }
 
@@ -131,7 +171,16 @@ export function createAuthenticationGatewayFromEnvironment(env = process.env, op
   const oidcAllowedTenants = parseJsonOrCsv(env.WORKFORCE_AUDIT_OIDC_ALLOWED_TENANTS);
   const oidcAuthenticator = mode === 'api-key' ? null : (options.oidcAuthenticator ?? createOidcAuthenticatorFromEnvironment(env, options.oidcOptions));
   const entitlementRegistry = options.entitlementRegistry ?? createIdentityEntitlementRegistryFromEnvironment(env, options.entitlementOptions);
-  return createAuthenticationGateway({ mode, apiKeyController, oidcAuthenticator, oidcAllowedTenants, entitlementRegistry });
+  const privilegedAccessRegistry = options.privilegedAccessRegistry
+    ?? createPrivilegedAccessRegistryFromEnvironment(env, options.privilegedAccessOptions);
+  return createAuthenticationGateway({
+    mode,
+    apiKeyController,
+    oidcAuthenticator,
+    oidcAllowedTenants,
+    entitlementRegistry,
+    privilegedAccessRegistry
+  });
 }
 
 function loadApiPrincipals(env) {
