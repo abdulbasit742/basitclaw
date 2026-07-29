@@ -4,6 +4,8 @@ import { createAdaptiveRateLimiterFromEnvironment } from '../security/rateLimite
 import { createEvidenceAwareApp } from './evidenceServer.js';
 import { createExternalScanCallbackHandler } from './externalScanCallbackHandler.js';
 import { createExternalScanEvidenceRegistryFromEnvironment } from './externalScanEvidenceRegistry.js';
+import { createExternalScanJobDeliveryHandler } from './externalScanJobDeliveryHandler.js';
+import { createExternalScanJobGovernanceHandler } from './externalScanJobGovernanceHandler.js';
 import { createExternalScanManagementHandler } from './externalScanManagementHandler.js';
 
 export function createExternalScanAwareApp({
@@ -18,7 +20,14 @@ export function createExternalScanAwareApp({
     authenticationGateway: baseApp.authenticationGateway,
     rateLimiter,
     securityTelemetry
-  })
+  }),
+  jobGovernanceHandler = createExternalScanJobGovernanceHandler({
+    registry: evidenceRegistry,
+    authenticationGateway: baseApp.authenticationGateway,
+    rateLimiter,
+    securityTelemetry
+  }),
+  jobDeliveryHandler = createExternalScanJobDeliveryHandler({ registry: evidenceRegistry, rateLimiter, securityTelemetry })
 } = {}) {
   const baseHandler = baseApp.listeners('request')[0];
   if (typeof baseHandler !== 'function') throw new TypeError('The evidence application must expose a request handler.');
@@ -28,6 +37,8 @@ export function createExternalScanAwareApp({
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
       if (callbackHandler.matches(url.pathname)) return await callbackHandler.handle(req, res, requestId);
+      if (jobDeliveryHandler.matches(url.pathname)) return await jobDeliveryHandler.handle(req, res, requestId);
+      if (jobGovernanceHandler.matches(url.pathname)) return await jobGovernanceHandler.handle(req, res, requestId);
       if (managementHandler.matches(url.pathname)) return await managementHandler.handle(req, res, requestId);
       return await baseHandler(req, res);
     } catch (error) {
@@ -58,6 +69,8 @@ export function createExternalScanAwareApp({
   server.evidenceReferenceMutex = baseApp.evidenceReferenceMutex;
   server.externalScanCallbackHandler = callbackHandler;
   server.externalScanManagementHandler = managementHandler;
+  server.externalScanJobGovernanceHandler = jobGovernanceHandler;
+  server.externalScanJobDeliveryHandler = jobDeliveryHandler;
   server.auditRegistry = baseApp.auditRegistry;
   return server;
 }
