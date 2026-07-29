@@ -2,7 +2,7 @@
 
 BasitClaw is a dependency-light Node.js workspace for enterprise workforce internal-audit assurance.
 
-Passes 1–8 established the audit universe, governed engagements and findings, tenant isolation, tamper-evident history, encrypted persistence and recovery, replicas and drills, fenced multi-process writes, lifecycle-managed credentials, fleet-wide throttling, and encrypted security evidence. Pass 9 adds policy-driven signed webhook alerts backed by a shared durable outbox, retries, dead letters, and operator recovery controls.
+Passes 1–9 established the audit universe, governed engagements and findings, tenant isolation, tamper-evident history, encrypted persistence and recovery, replicas and drills, fenced multi-process writes, lifecycle-managed API credentials, fleet-wide throttling, encrypted security evidence, and governed signed alert delivery. Pass 10 adds rotation-safe archive and webhook keyrings, historical verification, retirement safeguards, and key-lifecycle operator tooling.
 
 ## Requirements
 
@@ -44,25 +44,27 @@ WORKFORCE_AUDIT_DISTRIBUTED_RATE_LIMIT_REQUIRED=true
 WORKFORCE_AUDIT_SECURITY_ARCHIVE_MODE=shared-file
 WORKFORCE_AUDIT_SECURITY_ARCHIVE_REQUIRED=true
 WORKFORCE_AUDIT_SECURITY_ARCHIVE_DIR=/var/lib/basitclaw/workforce-audit-security-archive
-WORKFORCE_AUDIT_SECURITY_ARCHIVE_KEY=<base64-32-byte-key>
+WORKFORCE_AUDIT_SECURITY_ARCHIVE_KEYS='{"2026-q3":"<base64-32-byte-key>","2026-q2":"<previous-base64-32-byte-key>"}'
+WORKFORCE_AUDIT_SECURITY_ARCHIVE_PRIMARY_KEY_ID=2026-q3
 ```
 
-The archive stores already-redacted events in AES-256-GCM envelopes with a global HMAC chain, crash recovery, signed retention anchors, integrity verification, and cursor export.
+The archive stores already-redacted events in AES-256-GCM envelopes with a global HMAC chain, crash recovery, signed retention anchors, integrity verification, cursor export, and historical-key verification.
 
 ## Signed outbound security alerts
 
-Enable policy-driven webhook delivery with a shared durable outbox:
+Enable policy-driven webhook delivery with a shared durable outbox and an overlap signing keyring:
 
 ```bash
 WORKFORCE_AUDIT_SECURITY_ALERT_MODE=webhook
 WORKFORCE_AUDIT_SECURITY_ALERT_REQUIRED=true
 WORKFORCE_AUDIT_SECURITY_ALERT_WEBHOOK_URL=https://siem.example.com/hooks/workforce-audit
-WORKFORCE_AUDIT_SECURITY_ALERT_SIGNING_SECRET=<at-least-32-random-bytes>
+WORKFORCE_AUDIT_SECURITY_ALERT_SIGNING_SECRETS='{"2026-q3":"<new-long-random-secret>","2026-q2":"<previous-long-random-secret>"}'
+WORKFORCE_AUDIT_SECURITY_ALERT_PRIMARY_SIGNING_KEY_ID=2026-q3
 WORKFORCE_AUDIT_SECURITY_ALERT_OUTBOX_DIR=/var/lib/basitclaw/workforce-audit-security-alerts
 WORKFORCE_AUDIT_SECURITY_ALERT_MIN_SEVERITY=high
 ```
 
-Requests carry a stable delivery ID, timestamp, and HMAC-SHA256 signature. Delivery is at least once; receivers must deduplicate by delivery ID. Retryable failures use bounded backoff and `Retry-After`; permanent or exhausted failures move to a durable dead-letter queue.
+Requests carry a stable delivery ID, timestamp, signing key ID, and HMAC-SHA256 signature. Delivery is at least once; receivers must select the matching key, verify the signature and timestamp, and deduplicate by delivery ID. Retryable failures use bounded backoff and `Retry-After`; permanent or exhausted failures move to a durable dead-letter queue.
 
 Operator commands:
 
@@ -71,9 +73,13 @@ npm run security-alerts -- status
 npm run security-alerts -- dispatch 25
 npm run security-alerts -- dead-letters 100
 npm run security-alerts -- requeue ALERT-0123456789abcdef0123456789abcdef
+
+npm run security-keys -- status
+npm run security-keys -- archive-can-retire 2026-q2
+npm run security-keys -- alert-can-retire 2026-q2 --receiver-confirmed
 ```
 
-See `docs/api-security.md` and `docs/security-alert-delivery.md` for rollout, receiver verification, incident response, and recovery procedures.
+See `docs/api-security.md`, `docs/security-alert-delivery.md`, and `docs/security-key-rotation.md` for rollout, verification, retirement, incident response, and recovery procedures.
 
 ## Encrypted persistence and recovery
 
@@ -106,15 +112,15 @@ Compliance administrators can inspect:
 - `GET /api/workforce-audit/security-archive-events?afterSequence=0`
 - `GET /api/workforce-audit/security-archive-integrity`
 
-The security status response includes alert delivery and dead-letter readiness. Outbox and lock paths are available only through the local operator CLI.
+The security status response includes alert delivery, dead-letter, and redacted key-rotation readiness. Exact key IDs, references, and retirement decisions remain local operator information.
 
 ## Verification
 
-- `npm test` covers audit controls, access, persistence, recovery, replicas, coordination, credential lifecycle, shared quotas, archive integrity, signed alert delivery, cross-process claims, retry/dead-letter recovery, and readiness.
+- `npm test` covers audit controls, access, persistence, recovery, replicas, coordination, credential lifecycle, shared quotas, archive integrity, mixed-key evidence, signed alert delivery, cross-process claims, retry/dead-letter recovery, retirement safeguards, and readiness.
 - `npm run lint` validates runtime syntax.
 - `npm run build` verifies required production boundaries and dashboard markers.
 - GitHub Actions runs all three checks on pull requests and pushes to `main`.
 
 ## Deployment boundary
 
-Shared-file controls are unsuitable for eventually consistent object-store mounts. Production still requires managed secret custody, monitored mounts, approved retention, controlled egress, a receiver that verifies signatures and deduplicates deliveries, and regular recovery exercises. Automatic archive-key and webhook-signing-secret rotation remain future boundaries.
+Shared-file controls are unsuitable for eventually consistent object-store mounts. Production still requires managed secret custody, monitored mounts, approved retention, controlled egress, receivers that verify signatures and deduplicate deliveries, and regular recovery exercises. Key generation and secret-manager distribution remain external change-management responsibilities.
