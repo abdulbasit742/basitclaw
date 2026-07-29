@@ -5,12 +5,13 @@ const ROLE_PERMISSIONS = Object.freeze({
   auditor: ['audit:read', 'fieldwork:write', 'finding:write'],
   audit_manager: [
     'audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read',
-    'backup:read', 'backup:write', 'replica:read', 'replica:write', 'resilience:read', 'drill:run'
+    'backup:read', 'backup:write', 'replica:read', 'replica:write', 'resilience:read', 'drill:run',
+    'coordination:read'
   ],
   compliance_admin: [
     'audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read',
     'backup:read', 'backup:write', 'backup:restore', 'replica:read', 'replica:write',
-    'resilience:read', 'resilience:run', 'drill:run'
+    'resilience:read', 'resilience:run', 'drill:run', 'coordination:read'
   ]
 });
 

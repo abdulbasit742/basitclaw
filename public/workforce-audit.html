@@ -9,7 +9,7 @@
     * { box-sizing: border-box; }
     body { margin: 0; }
     header { padding: 28px clamp(20px, 5vw, 72px); background: #102a43; color: white; }
-    header p { max-width: 900px; color: #d9e2ec; }
+    header p { max-width: 940px; color: #d9e2ec; }
     main { padding: 24px clamp(20px, 5vw, 72px) 60px; }
     .auth, .grid { display: grid; gap: 16px; }
     .auth { grid-template-columns: minmax(220px, 1fr) auto; align-items: end; margin-bottom: 20px; }
@@ -34,7 +34,7 @@
 <body>
 <header>
   <h1>Workforce Audit Assurance</h1>
-  <p>Tenant-isolated audit readiness, encrypted persistence, governed recovery points, independently mounted replicas, and verifiable resilience drills.</p>
+  <p>Tenant-isolated audit readiness, encrypted persistence, governed recovery, independent replicas, and fencing-token write coordination for safe multi-process operation.</p>
 </header>
 <main>
   <form id="auth" class="auth">
@@ -83,7 +83,8 @@
       const canReadBackups = session.permissions.includes('backup:read');
       const canReadReplicas = session.permissions.includes('replica:read');
       const canReadResilience = session.permissions.includes('resilience:read');
-      const [overview, universe, engagements, providers, persistence, backups, replicas, resilience] = await Promise.all([
+      const canReadCoordination = session.permissions.includes('coordination:read');
+      const [overview, universe, engagements, providers, persistence, backups, replicas, resilience, coordination] = await Promise.all([
         secureFetch('/api/workforce-audit/overview'),
         secureFetch('/api/workforce-audit/universe'),
         secureFetch('/api/workforce-audit/engagements'),
@@ -91,7 +92,8 @@
         secureFetch('/api/workforce-audit/persistence-health').catch(() => null),
         canReadBackups ? secureFetch('/api/workforce-audit/backups') : Promise.resolve(null),
         canReadReplicas ? secureFetch('/api/workforce-audit/replicas').catch(() => []) : Promise.resolve(null),
-        canReadResilience ? secureFetch('/api/workforce-audit/resilience-status').catch(() => null) : Promise.resolve(null)
+        canReadResilience ? secureFetch('/api/workforce-audit/resilience-status').catch(() => null) : Promise.resolve(null),
+        canReadCoordination ? secureFetch('/api/workforce-audit/coordination-status').catch(() => null) : Promise.resolve(null)
       ]);
       document.querySelector('#identity').textContent = `${session.subject} · ${session.role} · ${session.tenantId}`;
       const cards = [
@@ -101,7 +103,9 @@
         ['Encrypted storage', persistence?.status ?? 'restricted'],
         ['Recovery points', backups ? backups.length : 'restricted'],
         ['Replica status', resilience?.replicaHealth?.status ?? 'restricted'],
-        ['Recovery drill', resilience?.drill?.status ?? 'restricted']
+        ['Recovery drill', resilience?.drill?.status ?? 'restricted'],
+        ['Write coordination', coordination?.enabled ? coordination.status : 'disabled'],
+        ['Fencing token', coordination?.latestFencingToken ?? 'restricted']
       ];
       document.querySelector('#metrics').innerHTML = cards.map(([label, value]) => `<article class="card"><div class="muted">${escapeHtml(label)}</div><div class="metric">${escapeHtml(value)}</div></article>`).join('');
       document.querySelector('#universe').innerHTML = universe.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.riskTier)}</td><td>${escapeHtml(item.owner)}</td><td><span class="badge ${item.readinessScore < 80 ? 'attention' : ''}">${escapeHtml(item.readinessScore)}%</span></td><td>${escapeHtml(item.openFindings)}</td></tr>`).join('');

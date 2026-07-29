@@ -2,6 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import {
+  CoordinationBusyError,
+  CoordinationLostError,
+  CoordinationUnavailableError
+} from './coordination/fileLeaseCoordinator.js';
+import { createRuntimeWorkforceAuditRegistry } from './coordination/coordinatedRegistry.js';
 import { PersistenceError } from './persistence/encryptedSnapshotStore.js';
 import { createResilienceSchedulerFromEnvironment } from './resilience/resilienceScheduler.js';
 import { AuthenticationError, AuthorizationError, createAccessController } from './security/accessControl.js';
@@ -12,15 +18,14 @@ import {
   RecoveryConflictError,
   ReplicaError,
   ReplicaIntegrityError,
-  ReplicaNotFoundError,
-  createWorkforceAuditRegistry
+  ReplicaNotFoundError
 } from './services/workforceAuditRegistry.js';
 import { NotFoundError, ValidationError } from './services/workforceAuditService.js';
 
 const dashboardPath = fileURLToPath(new URL('../public/workforce-audit.html', import.meta.url));
 
 export function createApp({
-  registry = createWorkforceAuditRegistry(),
+  registry = createRuntimeWorkforceAuditRegistry(),
   accessController = createAccessController(),
   resilienceScheduler = null
 } = {}) {
@@ -37,9 +42,12 @@ export function createApp({
         const persistence = registry.getPersistenceHealth();
         const replicaRequiredFailure = persistence.replicas?.required
           && (persistence.replicas.status !== 'ready' || persistence.replicas.readiness !== 'ready');
+        const coordinationFailure = persistence.coordination?.enabled
+          && persistence.coordination.status !== 'ready';
         const status = persistence.status === 'ready'
           && persistence.backups?.status === 'ready'
           && !replicaRequiredFailure
+          && !coordinationFailure
           ? 200
           : 503;
         return sendJson(res, status, {
@@ -110,6 +118,13 @@ export function createApp({
       if (req.method === 'GET' && url.pathname === '/api/workforce-audit/persistence-health') {
         accessController.authorise(principal, 'governance:read');
         return sendJson(res, 200, { success: true, data: registry.getPersistenceHealth(), meta }, requestId);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/workforce-audit/coordination-status') {
+        accessController.authorise(principal, 'coordination:read');
+        const data = typeof registry.getCoordinationStatus === 'function'
+          ? registry.getCoordinationStatus(principal.tenantId)
+          : { status: 'disabled', enabled: false, mode: 'disabled' };
+        return sendJson(res, 200, { success: true, data, meta }, requestId);
       }
       if (req.method === 'GET' && url.pathname === '/api/workforce-audit/resilience-status') {
         accessController.authorise(principal, 'resilience:read');
@@ -232,17 +247,27 @@ export function createApp({
       if (error instanceof BackupNotFoundError || error instanceof ReplicaNotFoundError || error instanceof NotFoundError) {
         return sendJson(res, 404, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
       }
+      if (error instanceof CoordinationBusyError) {
+        const retryAfterSeconds = Math.max(1, Math.ceil((error.details?.retryAfterMs ?? 1000) / 1000));
+        return sendJson(res, 423, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId, {
+          'retry-after': String(retryAfterSeconds)
+        });
+      }
       if (error instanceof BackupIntegrityError || error instanceof ReplicaIntegrityError || error instanceof RecoveryConflictError) {
         return sendJson(res, 409, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
+      }
+      if (error instanceof CoordinationLostError || error instanceof CoordinationUnavailableError) {
+        return sendJson(res, 503, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
       }
       if (error instanceof BackupError || error instanceof ReplicaError) {
         return sendJson(res, 503, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId);
       }
-      if (error instanceof PersistenceError || error?.code === 'PERSISTENCE_UNAVAILABLE') {
+      if (error instanceof PersistenceError || error?.code === 'PERSISTENCE_UNAVAILABLE' || error?.code === 'PERSISTENCE_FENCE_REJECTED') {
         return sendJson(res, 503, {
           success: false,
           error: 'The audit change could not be committed to durable storage.',
-          code: 'PERSISTENCE_UNAVAILABLE',
+          code: error.code ?? 'PERSISTENCE_UNAVAILABLE',
+          details: error.details,
           meta: { requestId }
         }, requestId);
       }

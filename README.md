@@ -2,7 +2,7 @@
 
 BasitClaw is a dependency-light Node.js workspace for enterprise workforce internal-audit assurance.
 
-Passes 1–4 established the audit universe, governed engagements and findings, tenant-scoped access, tamper-evident history, encrypted durable state, and governed backup/restore controls. Pass 5 adds encrypted replica targets, replication lag monitoring, scheduled recovery-point orchestration, non-destructive recovery drills, resilience APIs, and a GitHub Actions quality gate.
+Passes 1–5 established the audit universe, governed engagements and findings, tenant access controls, tamper-evident history, encrypted persistence, governed recovery, encrypted replicas, resilience drills, and CI. Pass 6 adds opt-in multi-process coordination using atomic tenant leases, monotonic fencing tokens, fresh state per operation, and versioned encrypted snapshots that reject superseded writers.
 
 ## Requirements
 
@@ -29,7 +29,7 @@ Configure `WORKFORCE_AUDIT_API_KEYS` as a JSON array:
 [{"apiKey":"replace-with-a-long-random-key","subject":"audit-manager","tenantId":"tenant-acme","role":"audit_manager"}]
 ```
 
-The authenticated principal determines the tenant; callers cannot override it. Audit managers can operate backups, replicas, and non-destructive drills. Compliance administrators additionally control restore execution and manual resilience cycles.
+The authenticated principal determines the tenant; callers cannot override it. Audit managers can inspect write coordination and operate backups, replicas, and non-destructive drills. Compliance administrators additionally control restore execution and manual resilience cycles.
 
 ## Encrypted persistence and recovery
 
@@ -44,6 +44,22 @@ WORKFORCE_AUDIT_BACKUP_RETENTION=30
 ```
 
 Primary snapshots and recovery points remain AES-256-GCM encrypted. Restore remains two-stage: dry-run with the current governance head, then an administrator request using the fresh head and exact `RESTORE <backupId>` confirmation. A verified safety backup is created before replacement, and failed recovery rolls the primary envelope, business state, and governance chain back together.
+
+## Multi-process coordination
+
+Coordination is disabled by default. Enable it only when every application process shares a filesystem that provides atomic directory creation and rename semantics:
+
+```bash
+WORKFORCE_AUDIT_COORDINATION_MODE=file-lease
+WORKFORCE_AUDIT_COORDINATION_DIR=/var/lib/basitclaw/workforce-audit-coordination
+WORKFORCE_AUDIT_FENCED_DATA_DIR=/var/lib/basitclaw/workforce-audit-fenced
+WORKFORCE_AUDIT_INSTANCE_ID=basitclaw-node-1
+WORKFORCE_AUDIT_LEASE_MS=30000
+WORKFORCE_AUDIT_ACQUIRE_TIMEOUT_MS=1000
+WORKFORCE_AUDIT_FENCED_VERSIONS=5
+```
+
+Every mutation acquires an exclusive tenant lease, reloads the latest encrypted snapshot and governance chain, and writes under a monotonically increasing fencing token. Readers select the highest token, so a paused process that resumes after lease takeover cannot replace newer state. Busy writes return `423 WRITE_COORDINATION_BUSY` with `Retry-After`; lost or unavailable leases fail closed.
 
 ## Resilience configuration
 
@@ -60,7 +76,7 @@ WORKFORCE_AUDIT_DRILL_MAX_AGE_DAYS=30
 
 The scheduler is disabled when `WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES=0`. A filesystem path only counts as independent disaster-recovery protection when the deployment mounts it from separately controlled durable storage.
 
-## Recovery and resilience APIs
+## Recovery, resilience, and coordination APIs
 
 - `GET|POST /api/workforce-audit/backups`
 - `POST /api/workforce-audit/backups/:backupId/verify`
@@ -71,14 +87,15 @@ The scheduler is disabled when `WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES=0`. A f
 - `GET /api/workforce-audit/resilience-status`
 - `POST /api/workforce-audit/recovery-drills`
 - `POST /api/workforce-audit/resilience-cycle`
+- `GET /api/workforce-audit/coordination-status`
 
 ## Verification
 
-- `npm test` covers audit rules, access control, encrypted persistence, backups, restore safeguards, replica integrity, scheduler behaviour, lag monitoring, and drills.
+- `npm test` covers audit rules, access control, encrypted persistence, backups, restore safeguards, replica integrity, scheduler behaviour, leases, stale takeover, fencing rejection, and cross-process state refresh.
 - `npm run lint` performs syntax validation.
-- `npm run build` verifies the runtime, recovery, and resilience boundaries.
+- `npm run build` verifies the runtime, recovery, resilience, and coordination boundaries.
 - `.github/workflows/ci.yml` runs all three checks on pull requests and pushes to `main`.
 
 ## Deployment boundary
 
-The primary, backup, and replica file stores still assume one writer process. A replica directory on the same host is not independent disaster recovery. Multi-process deployment requires shared transactional persistence or proven distributed locking; production also needs managed key custody, monitored storage mounts, alert routing, retention approval, and regular isolated recovery exercises.
+File-lease coordination supports multiple processes only when they share a correctly configured durable filesystem with atomic `mkdir` and `rename`. It is not a substitute for a transactional database across unreliable or eventually consistent storage. Production also needs managed key custody, monitored mounts, alert routing, retention approval, and regular isolated recovery exercises.

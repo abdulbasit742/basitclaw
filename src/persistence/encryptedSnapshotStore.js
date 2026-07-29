@@ -69,10 +69,7 @@ export function createEncryptedSnapshotStore({
       const envelope = JSON.parse(text);
       validateEnvelope(envelope, tenantId);
       const snapshot = decryptEnvelope(envelope, tenantId, keyring);
-      return {
-        envelope: structuredClone(envelope),
-        snapshot: structuredClone(snapshot)
-      };
+      return { envelope: structuredClone(envelope), snapshot: structuredClone(snapshot) };
     } catch (error) {
       if (error instanceof PersistenceError) throw error;
       throw new PersistenceError('Encrypted workforce-audit state could not be inspected.', {
@@ -82,10 +79,9 @@ export function createEncryptedSnapshotStore({
     }
   }
 
-  function save(tenantId, snapshot) {
+  function serialize(tenantId, snapshot) {
     validateTenantId(tenantId);
     validateSnapshot(snapshot, tenantId);
-    mkdirSync(absoluteDirectory, { recursive: true, mode: 0o700 });
     const iv = randomBytes(12);
     const key = keyring.get(primaryKeyId);
     const envelopeBase = {
@@ -103,13 +99,19 @@ export function createEncryptedSnapshotStore({
       cipher.update(JSON.stringify(snapshot), 'utf8'),
       cipher.final()
     ]);
-    const envelope = {
+    return `${JSON.stringify({
       ...envelopeBase,
       authTag: cipher.getAuthTag().toString('base64'),
       ciphertext: ciphertext.toString('base64')
-    };
+    })}\n`;
+  }
+
+  function save(tenantId, snapshot) {
+    const serialized = serialize(tenantId, snapshot);
+    mkdirSync(absoluteDirectory, { recursive: true, mode: 0o700 });
     const targetPath = tenantPath(absoluteDirectory, tenantId);
-    atomicWrite(targetPath, `${JSON.stringify(envelope)}\n`, tenantId, 'save');
+    atomicWrite(targetPath, serialized, tenantId, 'save');
+    const envelope = JSON.parse(serialized);
     return { tenantId, keyId: primaryKeyId, writtenAt: envelope.writtenAt, path: targetPath };
   }
 
@@ -157,6 +159,7 @@ export function createEncryptedSnapshotStore({
   return {
     load,
     save,
+    serialize,
     readEncrypted,
     inspectEncrypted,
     writeEncrypted,
@@ -169,14 +172,11 @@ export function createEncryptedSnapshotStore({
 export function createEncryptedSnapshotStoreFromEnvironment(env = process.env) {
   const directory = env.WORKFORCE_AUDIT_DATA_DIR ?? '.runtime-data/workforce-audit';
   if (!env.WORKFORCE_AUDIT_ENCRYPTION_KEYS) {
-    if (env.NODE_ENV === 'production') {
-      throw new Error('WORKFORCE_AUDIT_ENCRYPTION_KEYS is required in production.');
-    }
+    if (env.NODE_ENV === 'production') throw new Error('WORKFORCE_AUDIT_ENCRYPTION_KEYS is required in production.');
     const keyId = 'local-dev-v1';
     const key = createHash('sha256').update('basitclaw-local-development-only').digest();
     return createEncryptedSnapshotStore({ directory, keys: { [keyId]: key.toString('base64') }, primaryKeyId: keyId });
   }
-
   let keys;
   try { keys = JSON.parse(env.WORKFORCE_AUDIT_ENCRYPTION_KEYS); } catch {
     throw new Error('WORKFORCE_AUDIT_ENCRYPTION_KEYS must be valid JSON.');
@@ -193,13 +193,7 @@ export function hashTenantIdentifier(tenantId) {
 
 function decryptEnvelope(envelope, tenantId, keyring) {
   const key = keyring.get(envelope.keyId);
-  if (!key) {
-    throw new PersistenceError('The snapshot encryption key is not available.', {
-      tenantId,
-      keyId: envelope.keyId,
-      operation: 'decrypt'
-    });
-  }
+  if (!key) throw new PersistenceError('The snapshot encryption key is not available.', { tenantId, keyId: envelope.keyId, operation: 'decrypt' });
   try {
     const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(envelope.iv, 'base64'));
     decipher.setAAD(Buffer.from(associatedData(envelope)));
@@ -213,15 +207,12 @@ function decryptEnvelope(envelope, tenantId, keyring) {
     return snapshot;
   } catch (error) {
     if (error instanceof PersistenceError) throw error;
-    throw new PersistenceError('Encrypted workforce-audit state could not be decrypted.', {
-      tenantId,
-      keyId: envelope.keyId,
-      operation: 'decrypt'
-    }, error);
+    throw new PersistenceError('Encrypted workforce-audit state could not be decrypted.', { tenantId, keyId: envelope.keyId, operation: 'decrypt' }, error);
   }
 }
 
 function atomicWrite(targetPath, content, tenantId, operation) {
+  mkdirSync(dirname(targetPath), { recursive: true, mode: 0o700 });
   const temporaryPath = `${targetPath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
   let fileDescriptor;
   try {
@@ -233,14 +224,9 @@ function atomicWrite(targetPath, content, tenantId, operation) {
     renameSync(temporaryPath, targetPath);
     fsyncDirectory(dirname(targetPath));
   } catch (error) {
-    if (fileDescriptor !== undefined) {
-      try { closeSync(fileDescriptor); } catch {}
-    }
+    if (fileDescriptor !== undefined) { try { closeSync(fileDescriptor); } catch {} }
     try { unlinkSync(temporaryPath); } catch {}
-    throw new PersistenceError('Encrypted workforce-audit state could not be written.', {
-      tenantId,
-      operation
-    }, error);
+    throw new PersistenceError('Encrypted workforce-audit state could not be written.', { tenantId, operation }, error);
   }
 }
 
@@ -268,9 +254,7 @@ function validateSnapshot(snapshot, tenantId) {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) throw new TypeError('Snapshot must be an object.');
   if (snapshot.schemaVersion !== 1) throw new TypeError('Unsupported workforce-audit snapshot schema version.');
   if (snapshot.tenantId !== tenantId) throw new TypeError('Snapshot tenant does not match the requested tenant.');
-  if (!snapshot.state || !Array.isArray(snapshot.state.engagements) || !Array.isArray(snapshot.state.findings)) {
-    throw new TypeError('Snapshot state is incomplete.');
-  }
+  if (!snapshot.state || !Array.isArray(snapshot.state.engagements) || !Array.isArray(snapshot.state.findings)) throw new TypeError('Snapshot state is incomplete.');
   if (!Array.isArray(snapshot.governanceEvents)) throw new TypeError('Snapshot governanceEvents must be an array.');
 }
 
@@ -278,13 +262,9 @@ function validateEnvelope(envelope, tenantId) {
   if (!envelope || envelope.format !== FORMAT || envelope.version !== ENVELOPE_VERSION || envelope.algorithm !== ALGORITHM) {
     throw new PersistenceError('Unsupported encrypted snapshot envelope.', { tenantId, operation: 'load' });
   }
-  if (envelope.tenantHash !== hashTenantIdentifier(tenantId)) {
-    throw new PersistenceError('Encrypted snapshot tenant binding is invalid.', { tenantId, operation: 'load' });
-  }
+  if (envelope.tenantHash !== hashTenantIdentifier(tenantId)) throw new PersistenceError('Encrypted snapshot tenant binding is invalid.', { tenantId, operation: 'load' });
   for (const field of ['keyId', 'writtenAt', 'iv', 'authTag', 'ciphertext']) {
-    if (typeof envelope[field] !== 'string' || envelope[field].length === 0) {
-      throw new PersistenceError(`Encrypted snapshot field ${field} is missing.`, { tenantId, operation: 'load' });
-    }
+    if (typeof envelope[field] !== 'string' || envelope[field].length === 0) throw new PersistenceError(`Encrypted snapshot field ${field} is missing.`, { tenantId, operation: 'load' });
   }
 }
 
@@ -314,10 +294,8 @@ function fsyncDirectory(directory) {
     descriptor = openSync(directory, 'r');
     fsyncSync(descriptor);
   } catch {
-    // Some platforms do not support directory fsync. The file itself was fsynced before rename.
+    // Some platforms do not support directory fsync.
   } finally {
-    if (descriptor !== undefined) {
-      try { closeSync(descriptor); } catch {}
-    }
+    if (descriptor !== undefined) { try { closeSync(descriptor); } catch {} }
   }
 }
