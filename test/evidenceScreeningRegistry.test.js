@@ -31,7 +31,7 @@ function fixture({ now = () => new Date(), eventRetention = 100 } = {}) {
     eventRetention,
     now
   });
-  return { registry, directory };
+  return { registry, base, directory };
 }
 
 function filesUnder(directory) {
@@ -133,6 +133,53 @@ test('tenant status reports quarantined and rejected evidence posture', () => {
   assert.equal(status.status, 'attention');
   assert.equal(status.screening.quarantined, 1);
   assert.equal(status.screening.rejected, 0);
+});
+
+test('orphaned unscreened evidence remains visible but fail-closed', () => {
+  const { registry, base } = fixture();
+  const item = base.ingest('tenant-a', {
+    filename: 'orphan.txt', mediaType: 'text/plain', contentBase64: encode('orphan')
+  }, { actor: 'auditor.one' });
+  const listed = registry.list('tenant-a');
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].evidenceId, item.evidenceId);
+  assert.equal(listed[0].status, 'quarantine');
+  assert.equal(listed[0].screening.status, 'unavailable');
+  assert.equal(registry.get('tenant-a', item.evidenceId).status, 'quarantine');
+  assert.throws(() => registry.readContent('tenant-a', item.evidenceId));
+});
+
+test('screening status filters apply the requested limit after filtering', () => {
+  const { registry } = fixture();
+  const quarantined = registry.ingest('tenant-a', {
+    filename: 'script.js', mediaType: 'application/javascript', contentBase64: encode('alert(1)')
+  }, { actor: 'auditor.one' });
+  registry.ingest('tenant-a', { filename: 'clean-1.txt', mediaType: 'text/plain', contentBase64: encode('clean-1') }, { actor: 'auditor.one' });
+  registry.ingest('tenant-a', { filename: 'clean-2.txt', mediaType: 'text/plain', contentBase64: encode('clean-2') }, { actor: 'auditor.one' });
+  const result = registry.list('tenant-a', { status: 'quarantine', limit: 1 });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].evidenceId, quarantined.evidenceId);
+});
+
+test('legal-hold responses preserve quarantine screening posture', () => {
+  const { registry } = fixture();
+  const item = registry.ingest('tenant-a', {
+    filename: 'script.js', mediaType: 'application/javascript', contentBase64: encode('alert(1)')
+  }, { actor: 'auditor.one' });
+  const held = registry.placeLegalHold('tenant-a', item.evidenceId, {
+    matterId: 'matter-2026-001',
+    reason: 'Preserve suspicious evidence for independent investigation',
+    reviewAt: '2035-01-01T00:00:00.000Z'
+  }, { actor: 'admin.one' });
+  assert.equal(held.status, 'quarantine');
+  assert.equal(held.screening.accessDecision, 'quarantine');
+  assert.equal(held.legalHold.active, true);
+  const released = registry.releaseLegalHold('tenant-a', item.evidenceId, {
+    confirmation: `RELEASE HOLD ${item.evidenceId}`,
+    reason: 'Independent investigation completed and hold may be released'
+  }, { actor: 'admin.two' });
+  assert.equal(released.status, 'quarantine');
+  assert.equal(released.screening.accessDecision, 'quarantine');
 });
 
 test('screening events honour the injected clock and configured retention anchor', () => {
