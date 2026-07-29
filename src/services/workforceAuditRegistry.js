@@ -153,12 +153,15 @@ export function createWorkforceAuditRegistry({
           reason: safeReason,
           checksumSha256: replica.checksumSha256,
           replicatedAt: replica.replicatedAt,
-          prunedReplicaIds: replica.prunedReplicaIds
+          prunedReplicaIds: replica.prunedReplicaIds,
+          idempotent: Boolean(replica.idempotent)
         }
       });
       return replica;
     } catch (error) {
-      try { replicas.remove(tenantId, backupId); } catch {}
+      if (!replica.idempotent) {
+        try { replicas.remove(tenantId, backupId); } catch {}
+      }
       throw error;
     }
   }
@@ -275,6 +278,13 @@ export function createWorkforceAuditRegistry({
             reason: 'Scheduled workforce-audit resilience recovery point',
             kind: 'scheduled'
           });
+          if (backup.replication?.required && backup.replication.status === 'failed') {
+            throw new ReplicaError('Required replication failed during the resilience cycle.', {
+              tenantId,
+              backupId: backup.backupId,
+              code: backup.replication.code
+            });
+          }
         } else if (replicas.enabled && !replicas.list(tenantId).some((item) => item.backupId === backups[0]?.backupId)) {
           replicateTenantBackup(tenantId, backups[0].backupId, {
             actor: safeActor,
