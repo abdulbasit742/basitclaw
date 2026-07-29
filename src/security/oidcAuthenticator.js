@@ -127,6 +127,7 @@ export function createOidcAuthenticator({
 
   function mapRole(value) {
     const groups = normaliseClaimList(value);
+    if (groups.length > 500) throw authError('The identity contains too many group claims.', 'OIDC_GROUPS_INVALID');
     const roles = new Set(groups.map((group) => roleMap.get(group)).filter(Boolean));
     if (roles.size === 0) throw authError('No workforce-audit role is mapped for this identity.', 'OIDC_ROLE_NOT_MAPPED');
     if (roles.size > 1) throw authError('The identity maps to multiple workforce-audit roles.', 'OIDC_ROLE_AMBIGUOUS', { roles: [...roles].sort() });
@@ -221,6 +222,11 @@ export function createOidcAuthenticator({
 }
 
 export function createOidcAuthenticatorFromEnvironment(env = process.env, options = {}) {
+  const allowedTenants = parseJsonOrCsv(env.WORKFORCE_AUDIT_OIDC_ALLOWED_TENANTS);
+  const allowAnyTenant = String(env.WORKFORCE_AUDIT_OIDC_ALLOW_ANY_TENANT ?? 'false') === 'true';
+  if (env.NODE_ENV === 'production' && allowedTenants.length === 0 && !allowAnyTenant) {
+    throw new TypeError('WORKFORCE_AUDIT_OIDC_ALLOWED_TENANTS is required in production unless WORKFORCE_AUDIT_OIDC_ALLOW_ANY_TENANT=true.');
+  }
   return createOidcAuthenticator({
     issuer: env.WORKFORCE_AUDIT_OIDC_ISSUER,
     audience: parseJsonOrCsv(env.WORKFORCE_AUDIT_OIDC_AUDIENCE),
@@ -229,7 +235,7 @@ export function createOidcAuthenticatorFromEnvironment(env = process.env, option
     groupRoleMap: parseRequiredJson(env.WORKFORCE_AUDIT_OIDC_GROUP_ROLE_MAP, 'WORKFORCE_AUDIT_OIDC_GROUP_ROLE_MAP'),
     tenantClaim: env.WORKFORCE_AUDIT_OIDC_TENANT_CLAIM ?? 'tenant_id',
     groupsClaim: env.WORKFORCE_AUDIT_OIDC_GROUPS_CLAIM ?? 'groups',
-    allowedTenants: parseJsonOrCsv(env.WORKFORCE_AUDIT_OIDC_ALLOWED_TENANTS),
+    allowedTenants,
     allowedAlgorithms: parseJsonOrCsv(env.WORKFORCE_AUDIT_OIDC_ALLOWED_ALGORITHMS ?? 'RS256'),
     requiredAcr: parseJsonOrCsv(env.WORKFORCE_AUDIT_OIDC_REQUIRED_ACR),
     requiredAmr: parseJsonOrCsv(env.WORKFORCE_AUDIT_OIDC_REQUIRED_AMR),
@@ -245,6 +251,7 @@ export function createOidcAuthenticatorFromEnvironment(env = process.env, option
 
 export function parseJwt(token) {
   const raw = String(token ?? '').trim();
+  if (raw.length === 0 || raw.length > 16_384) throw authError('The federated access token is malformed.', 'OIDC_TOKEN_MALFORMED');
   const parts = raw.split('.');
   if (parts.length !== 3 || parts.some((part) => !part)) throw authError('The federated access token is malformed.', 'OIDC_TOKEN_MALFORMED');
   let header;
@@ -257,22 +264,34 @@ export function parseJwt(token) {
   }
   if (!header || typeof header !== 'object' || Array.isArray(header)) throw authError('The token header is invalid.', 'OIDC_TOKEN_MALFORMED');
   if (header.crit !== undefined) throw authError('Critical JWT extensions are not supported.', 'OIDC_CRITICAL_HEADER_UNSUPPORTED');
+  if (header.jku !== undefined || header.jwk !== undefined || header.x5u !== undefined) throw authError('JWT header-supplied signing keys are not allowed.', 'OIDC_HEADER_KEY_REFERENCE_FORBIDDEN');
   if (header.typ !== undefined && !['JWT', 'at+jwt'].includes(String(header.typ))) throw authError('The JWT type is not allowed.', 'OIDC_TOKEN_TYPE_INVALID');
   const alg = String(header.alg ?? '');
   if (!alg || alg.toLowerCase() === 'none' || alg.startsWith('HS')) throw authError('The token signing algorithm is not allowed.', 'OIDC_ALGORITHM_NOT_ALLOWED');
   const signature = decodeBase64Url(parts[2]);
-  return { raw, parts, header: { ...header, alg, kid: header.kid ? String(header.kid) : null }, payload, signature, signingInput: Buffer.from(`${parts[0]}.${parts[1]}`, 'ascii') };
+  const kid = header.kid ? safeIdentifier(header.kid, 'kid') : null;
+  return { raw, parts, header: { ...header, alg, kid }, payload, signature, signingInput: Buffer.from(`${parts[0]}.${parts[1]}`, 'ascii') };
 }
 
 function verifyJwtSignature(parsed, jwk, algorithm) {
-  let key;
-  try { key = createPublicKey({ key: jwk, format: 'jwk' }); } catch {
-    throw authError('The token signing key is invalid.', 'OIDC_SIGNING_KEY_INVALID', { keyId: parsed.header.kid });
+  if (algorithm === 'RS256' && jwk.kty !== 'RSA') throw authError('The token signing key type is invalid.', 'OIDC_SIGNING_KEY_INVALID', { keyId: parsed.header.kid });
+  if (algorithm === 'ES256' && (jwk.kty !== 'EC' || jwk.crv !== 'P-256')) {
+    throw authError('The token signing key type is invalid.', 'OIDC_SIGNING_KEY_INVALID', { keyId: parsed.header.kid });
   }
-  const options = algorithm === 'ES256' ? { key, dsaEncoding: 'ieee-p1363' } : key;
-  const verifier = algorithm === 'RS256' ? 'RSA-SHA256' : algorithm === 'ES256' ? 'sha256' : null;
-  if (!verifier || !verifySignature(verifier, parsed.signingInput, options, parsed.signature)) {
-    throw authError('The federated access token signature is invalid.', 'OIDC_SIGNATURE_INVALID', { keyId: parsed.header.kid });
+  let key;
+  try {
+    key = createPublicKey({ key: jwk, format: 'jwk' });
+    if (algorithm === 'RS256' && Number(key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) {
+      throw new Error('RSA key is too small.');
+    }
+    const options = algorithm === 'ES256' ? { key, dsaEncoding: 'ieee-p1363' } : key;
+    const verifier = algorithm === 'RS256' ? 'RSA-SHA256' : algorithm === 'ES256' ? 'sha256' : null;
+    if (!verifier || !verifySignature(verifier, parsed.signingInput, options, parsed.signature)) {
+      throw authError('The federated access token signature is invalid.', 'OIDC_SIGNATURE_INVALID', { keyId: parsed.header.kid });
+    }
+  } catch (error) {
+    if (error instanceof OidcAuthenticationError) throw error;
+    throw authError('The token signing key is invalid.', 'OIDC_SIGNING_KEY_INVALID', { keyId: parsed.header.kid });
   }
 }
 
@@ -291,10 +310,11 @@ function normaliseJwks(value) {
   const output = new Map();
   for (const jwk of value.keys) {
     if (!jwk || typeof jwk !== 'object' || Array.isArray(jwk)) continue;
+    if (jwk.use && jwk.use !== 'sig') continue;
+    if (Array.isArray(jwk.key_ops) && !jwk.key_ops.includes('verify')) continue;
+    if (!['RSA', 'EC'].includes(jwk.kty)) continue;
     const kid = safeIdentifier(jwk.kid, 'kid');
     if (output.has(kid)) throw new TypeError('OIDC JWKS contains duplicate key IDs.');
-    if (jwk.use && jwk.use !== 'sig') continue;
-    if (!['RSA', 'EC'].includes(jwk.kty)) continue;
     output.set(kid, structuredClone(jwk));
   }
   if (output.size === 0) throw new TypeError('OIDC JWKS contains no usable signing keys.');
