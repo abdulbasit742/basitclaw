@@ -8,7 +8,10 @@ import {
   OidcAuthenticationError,
   createOidcAuthenticatorFromEnvironment
 } from './oidcAuthenticator.js';
-import { createIdentityEntitlementRegistryFromEnvironment } from './identityEntitlementRegistry.js';
+import {
+  createDisabledIdentityEntitlementRegistry,
+  createIdentityEntitlementRegistryFromEnvironment
+} from './identityEntitlementRegistry.js';
 
 const AUTH_MODES = new Set(['api-key', 'oidc', 'hybrid']);
 
@@ -24,7 +27,7 @@ export function createAuthenticationGateway({
   if (authenticationMode !== 'oidc' && !apiKeyController) throw new TypeError('API-key authentication is required by the configured authentication mode.');
   if (authenticationMode !== 'api-key' && !oidcAuthenticator) throw new TypeError('OIDC authentication is required by the configured authentication mode.');
   const knownOidcTenants = new Set(oidcAllowedTenants.map((value) => String(value).trim()).filter(Boolean));
-  const entitlements = entitlementRegistry ?? disabledEntitlements();
+  const entitlements = entitlementRegistry ?? createDisabledIdentityEntitlementRegistry();
 
   async function authenticate(req) {
     const apiKey = headerValue(req.headers?.['x-api-key']);
@@ -87,11 +90,7 @@ export function createAuthenticationGateway({
   function credentialHealth() {
     const apiKeys = apiKeyController?.credentialHealth?.() ?? disabledApiKeyHealth();
     const oidc = oidcAuthenticator?.health?.() ?? disabledOidcHealth();
-    const rawEntitlements = entitlements.health?.() ?? { status: 'disabled', enabled: false, required: false, mode: 'disabled' };
-    const reviewAttention = ['attention', 'degraded'].includes(rawEntitlements.status);
-    const identityEntitlements = reviewAttention
-      ? { ...rawEntitlements, status: 'ready', reviewStatus: rawEntitlements.status }
-      : rawEntitlements;
+    const identityEntitlements = entitlements.health?.() ?? { status: 'disabled', enabled: false, required: false, mode: 'disabled' };
     const enabledHealth = [
       ...(authenticationMode !== 'oidc' ? [apiKeys.status] : []),
       ...(authenticationMode !== 'api-key' ? [oidc.status] : []),
@@ -210,11 +209,4 @@ function disabledApiKeyHealth() {
 
 function disabledOidcHealth() {
   return { status: 'disabled', enabled: false, mode: 'disabled' };
-}
-
-function disabledEntitlements() {
-  return {
-    mode: 'disabled', enforce: (principal) => principal, tenantIds: () => [],
-    health: () => ({ status: 'disabled', enabled: false, required: false, mode: 'disabled' })
-  };
 }
