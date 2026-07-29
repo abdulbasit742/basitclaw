@@ -57,7 +57,7 @@ for (const marker of ['WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES', 'runResilience
 }
 
 const server = await readFile(new URL('../src/server.js', import.meta.url), 'utf8');
-for (const marker of ['/backups', 'backup:restore', 'resilience-status', 'coordination-status', 'WRITE_COORDINATION_BUSY']) {
+for (const marker of ['/backups', 'backup:restore', 'resilience-status', 'coordination-status', 'CoordinationBusyError']) {
   if (!server.includes(marker)) throw new Error(`Server build verification failed: missing ${marker}.`);
 }
 
