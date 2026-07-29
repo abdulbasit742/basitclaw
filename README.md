@@ -2,11 +2,12 @@
 
 BasitClaw is a dependency-light Node.js workspace for enterprise workforce internal-audit assurance.
 
-Passes 1–6 established the audit universe, governed engagements and findings, tenant access controls, tamper-evident history, encrypted persistence, governed recovery, encrypted replicas, resilience drills, CI, and fenced multi-process coordination. Pass 7 adds lifecycle-managed scrypt API credentials, adaptive abuse controls, privacy-minimised security telemetry, credential-generation tooling, and security readiness APIs.
+Passes 1–7 established the audit universe, governed engagements and findings, tenant isolation, tamper-evident history, encrypted persistence, recovery points, replicas, resilience drills, fenced multi-process writes, lifecycle-managed credentials, throttling, and privacy-minimised telemetry. Pass 8 adds fleet-wide file-backed rate limits and an encrypted, durable, hash-chained security-event archive.
 
 ## Requirements
 
 - Node.js 20 or newer
+- A shared durable filesystem with reliable atomic `mkdir` and `rename` when shared-file coordination or security controls are enabled
 
 ## Local setup
 
@@ -21,98 +22,77 @@ npm start
 
 Open `http://localhost:3000/dashboard/workforce-audit` and enter the local development key from `.env`.
 
-## API credential configuration
+## Credentials
 
-Legacy plaintext `apiKey` records remain available only outside production for migration compatibility. Production uses `keyId.secret` credentials backed by scrypt hashes:
+Production uses `keyId.secret` credentials backed by scrypt hashes. Generate one with:
 
 ```bash
 npm run credential:generate -- admin-2026-q3 audit-admin tenant-acme compliance_admin 2026-10-31T00:00:00Z
 ```
 
-The generator prints the presented key once and a configuration record containing `keyId`, `salt`, `secretHash`, subject, tenant, role, status, and optional expiry. Store the presented key in a secret manager and place only the record in `WORKFORCE_AUDIT_API_KEYS`.
+Store the presented key in a secret manager and place only the generated record in `WORKFORCE_AUDIT_API_KEYS`. Retiring or soon-expiring credentials receive a rotation header; revoked, expired, and premature credentials fail closed.
 
-The authenticated principal determines the tenant; callers cannot override it. `active` and `retiring` credentials are accepted within their activation and expiry windows. Retiring or soon-expiring credentials receive `x-api-key-rotation-required: true`. Revoked, expired, and premature credentials fail closed.
+## Shared API security controls
 
-## API abuse protection
+The limiter separates bursts, failed authentication, reads, writes, and sensitive recovery operations. Single-process deployments may use `memory`; coordinated production deployments require `shared-file` by default:
 
-The built-in limiter separates client bursts, failed authentication, authenticated reads, authenticated writes, and sensitive recovery operations. Exceeded limits return `429 RATE_LIMITED` with `Retry-After` and standard rate-limit headers.
+```bash
+WORKFORCE_AUDIT_RATE_LIMIT_MODE=shared-file
+WORKFORCE_AUDIT_RATE_LIMIT_DIR=/var/lib/basitclaw/workforce-audit-rate-limits
+WORKFORCE_AUDIT_DISTRIBUTED_RATE_LIMIT_REQUIRED=true
+```
 
-The built-in limiter is process-local and reports `distributed: false`. Multi-process deployments must also enforce a shared limit at the ingress gateway or service mesh. Keep `WORKFORCE_AUDIT_TRUST_PROXY_HOPS=0` unless the exact trusted proxy chain is known.
+The encrypted security archive mirrors redacted events into AES-256-GCM envelopes with a global HMAC chain, crash recovery, signed retention anchors, and cursor-based export:
+
+```bash
+WORKFORCE_AUDIT_SECURITY_ARCHIVE_MODE=shared-file
+WORKFORCE_AUDIT_SECURITY_ARCHIVE_REQUIRED=true
+WORKFORCE_AUDIT_SECURITY_ARCHIVE_DIR=/var/lib/basitclaw/workforce-audit-security-archive
+WORKFORCE_AUDIT_SECURITY_ARCHIVE_KEY=<base64-32-byte-key>
+```
 
 Compliance administrators can inspect:
 
 - `GET /api/workforce-audit/security-status`
 - `GET /api/workforce-audit/security-events`
+- `GET /api/workforce-audit/security-archive-events?afterSequence=0`
+- `GET /api/workforce-audit/security-archive-integrity`
 
-Security events retain keyed client fingerprints, not raw addresses. API keys, secrets, passwords, and tokens are removed from details. See `docs/api-security.md` for rotation and deployment procedures.
+Client identities are represented by keyed fingerprints, and raw keys, secrets, passwords, tokens, and addresses are not archived. See `docs/api-security.md` for rollout, recovery, and SIEM polling guidance.
 
 ## Encrypted persistence and recovery
-
-Production requires a JSON keyring containing base64-encoded 32-byte keys and a primary key ID:
 
 ```bash
 WORKFORCE_AUDIT_ENCRYPTION_KEYS='{"2026-q3":"<base64-32-byte-key>","2026-q2":"<previous-base64-key>"}'
 WORKFORCE_AUDIT_PRIMARY_KEY_ID=2026-q3
 WORKFORCE_AUDIT_DATA_DIR=/var/lib/basitclaw/workforce-audit
 WORKFORCE_AUDIT_BACKUP_DIR=/var/lib/basitclaw/workforce-audit-backups
-WORKFORCE_AUDIT_BACKUP_RETENTION=30
 ```
 
-Primary snapshots and recovery points remain AES-256-GCM encrypted. Restore remains two-stage: dry-run with the current governance head, then an administrator request using the fresh head and exact `RESTORE <backupId>` confirmation. A verified safety backup is created before replacement, and failed recovery rolls the primary envelope, business state, and governance chain back together.
+Primary snapshots and recovery points remain AES-256-GCM encrypted. Restore is two-stage, checks the current governance head, requires exact confirmation, creates a safety backup, and rolls state and history back together on failure.
 
 ## Multi-process coordination
-
-Coordination is disabled by default. Enable it only when every application process shares a filesystem that provides atomic directory creation and rename semantics:
 
 ```bash
 WORKFORCE_AUDIT_COORDINATION_MODE=file-lease
 WORKFORCE_AUDIT_COORDINATION_DIR=/var/lib/basitclaw/workforce-audit-coordination
 WORKFORCE_AUDIT_FENCED_DATA_DIR=/var/lib/basitclaw/workforce-audit-fenced
 WORKFORCE_AUDIT_INSTANCE_ID=basitclaw-node-1
-WORKFORCE_AUDIT_LEASE_MS=30000
-WORKFORCE_AUDIT_ACQUIRE_TIMEOUT_MS=1000
-WORKFORCE_AUDIT_FENCED_VERSIONS=5
 ```
 
-Every mutation acquires an exclusive tenant lease, reloads the latest encrypted snapshot and governance chain, and writes under a monotonically increasing fencing token. Readers select the highest token, so a paused process that resumes after lease takeover cannot replace newer state. Busy writes return `423 WRITE_COORDINATION_BUSY` with `Retry-After`; lost or unavailable leases fail closed.
+Every mutation acquires an exclusive tenant lease and writes under a monotonically increasing fencing token. A delayed superseded writer cannot replace newer state.
 
-## Resilience configuration
+## Resilience
 
-To add a separately controlled encrypted replica target and scheduled exercises:
-
-```bash
-WORKFORCE_AUDIT_REPLICA_DIR=/mnt/off-host/workforce-audit-replicas
-WORKFORCE_AUDIT_REPLICA_RETENTION=90
-WORKFORCE_AUDIT_REPLICATION_REQUIRED=true
-WORKFORCE_AUDIT_REPLICA_MAX_LAG_MINUTES=2880
-WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES=1440
-WORKFORCE_AUDIT_DRILL_MAX_AGE_DAYS=30
-```
-
-The scheduler is disabled when `WORKFORCE_AUDIT_SCHEDULED_BACKUP_MINUTES=0`. A filesystem path only counts as independent disaster-recovery protection when the deployment mounts it from separately controlled durable storage.
-
-## Recovery, resilience, coordination, and security APIs
-
-- `GET|POST /api/workforce-audit/backups`
-- `POST /api/workforce-audit/backups/:backupId/verify`
-- `POST /api/workforce-audit/backups/:backupId/restore`
-- `GET /api/workforce-audit/replicas`
-- `POST /api/workforce-audit/backups/:backupId/replicate`
-- `POST /api/workforce-audit/replicas/:backupId/verify`
-- `GET /api/workforce-audit/resilience-status`
-- `POST /api/workforce-audit/recovery-drills`
-- `POST /api/workforce-audit/resilience-cycle`
-- `GET /api/workforce-audit/coordination-status`
-- `GET /api/workforce-audit/security-status`
-- `GET /api/workforce-audit/security-events`
+A separately mounted replica target, scheduled backups, and non-destructive drills provide recovery evidence. A path counts as independent disaster recovery only when mounted from separately controlled durable storage.
 
 ## Verification
 
-- `npm test` covers audit rules, access control, encrypted persistence, backups, restore safeguards, replicas, scheduler behaviour, leases, fencing, credential lifecycle, limiter policies, telemetry redaction, and server security responses.
-- `npm run lint` performs syntax validation.
-- `npm run build` verifies the runtime, recovery, resilience, coordination, and API-security boundaries.
-- `.github/workflows/ci.yml` runs all three checks on pull requests and pushes to `main`.
+- `npm test` covers audit controls, access, persistence, recovery, replicas, coordination, credential lifecycle, shared quotas, encrypted archive integrity, crash recovery, retention anchors, and API readiness.
+- `npm run lint` validates runtime syntax.
+- `npm run build` verifies all required production boundaries and dashboard markers.
+- GitHub Actions runs all three checks on pull requests and pushes to `main`.
 
 ## Deployment boundary
 
-File-lease coordination requires a correctly configured shared filesystem with atomic `mkdir` and `rename`. The built-in rate limiter and security event buffer are process-local; production still needs global ingress limits, central alert delivery and SIEM retention, managed key custody, monitored mounts, approved retention, and regular isolated recovery exercises.
+Shared-file controls are unsuitable for eventually consistent object-store mounts. The archive export supports SIEM polling but does not yet push alerts outbound. Production still needs managed key custody, monitored mounts, approved retention, external alert routing, and regular isolated recovery exercises.
