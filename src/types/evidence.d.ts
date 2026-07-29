@@ -2,11 +2,38 @@ export type EvidenceStatus = 'active' | 'quarantine' | 'rejected' | 'disposed';
 export type EvidenceSourceType = 'uploaded' | 'system_export' | 'email' | 'interview' | 'observation' | 'external_provider';
 export type EvidenceScreeningDecision = 'clean' | 'quarantine' | 'rejected';
 export type EvidenceScreeningSeverity = 'medium' | 'high' | 'critical';
+export type ExternalScanVerdict = 'clean' | 'suspicious' | 'malicious' | 'error';
 
 export interface EvidenceScreeningFinding {
   ruleId: string;
   severity: EvidenceScreeningSeverity;
   category: 'malware' | 'dlp' | 'content-validation' | 'uninspectable-container' | 'active-content';
+}
+
+export interface ExternalScanFinding {
+  ruleId: string;
+  severity: 'info' | 'low' | 'medium' | 'high' | 'critical';
+  category: string;
+}
+
+export interface ExternalScanAttestation {
+  receiptId: string;
+  attestationId: string;
+  providerId: string;
+  keyId: string;
+  evidenceId: string;
+  version: number;
+  contentSha256: string;
+  verdict: ExternalScanVerdict;
+  scannedAt: string;
+  receivedAt: string;
+  engine: string;
+  engineVersion: string | null;
+  definitionsVersion: string | null;
+  findings: ExternalScanFinding[];
+  sequence: number;
+  previousHash: string | null;
+  hash: string;
 }
 
 export interface EvidenceScreeningSummary {
@@ -23,6 +50,7 @@ export interface EvidenceScreeningSummary {
   findings: EvidenceScreeningFinding[];
   reviewedAt: string | null;
   reviewAction: 'released' | 'rejected' | null;
+  externalScan?: ExternalScanAttestation | null;
 }
 
 export interface EvidenceVersion {
@@ -56,6 +84,7 @@ export interface EvidenceItem {
   currentVersion: number;
   versions: EvidenceVersion[];
   screening?: EvidenceScreeningSummary | { status: 'not-applicable' };
+  externalScan?: ExternalScanAttestation | null;
   legalHold: EvidenceLegalHoldSummary | null;
   disposedAt: string | null;
   disposedBy: string | null;
@@ -86,6 +115,20 @@ export interface EvidenceScreeningEvent {
   hash: string;
 }
 
+export interface ExternalScanStatus {
+  status: 'ready' | 'attention' | 'unavailable' | 'disabled';
+  mode: 'disabled' | 'observe' | 'enforce';
+  requiredForRelease: boolean;
+  totalAttestations?: number;
+  clean?: number;
+  suspicious?: number;
+  malicious?: number;
+  errors?: number;
+  headSequence?: number;
+  headHash?: string | null;
+  error?: string;
+}
+
 export interface EvidenceIntegrityResult {
   valid: true;
   tenantId: string;
@@ -104,6 +147,13 @@ export interface EvidenceIntegrityResult {
     headHash: string | null;
     anchorSequence: number;
   };
+  externalScan?: {
+    valid: true;
+    tenantId: string;
+    records: number;
+    headSequence: number;
+    headHash: string | null;
+  };
 }
 
 export interface EvidenceScreeningHealth {
@@ -121,6 +171,22 @@ export interface EvidenceScreeningHealth {
   headSequence?: number;
   headHash?: string | null;
   anchorSequence?: number;
+  error?: string;
+}
+
+export interface ExternalScanHealth {
+  status: 'ready' | 'unavailable' | 'disabled';
+  enabled: boolean;
+  mode: 'disabled' | 'observe' | 'enforce';
+  requiredForRelease: boolean;
+  durable?: boolean;
+  distributed?: boolean;
+  encrypted?: boolean;
+  providerCount?: number;
+  maxAttestationAgeMinutes?: number;
+  clockSkewSeconds?: number;
+  eventRetention?: number;
+  maxRecords?: number;
   error?: string;
 }
 
@@ -147,5 +213,6 @@ export interface EvidenceHealth {
   headHash?: string | null;
   anchorSequence?: number;
   screening?: EvidenceScreeningHealth;
+  externalScan?: ExternalScanHealth;
   error?: string;
 }
