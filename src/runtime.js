@@ -36,7 +36,7 @@ export async function prepareIdentityProvider({
 
 export function prepareIdentityLifecycle({ app, env = process.env } = {}) {
   const entitlementHealth = app?.identityEntitlements?.health?.() ?? { status: 'disabled', enabled: false, required: false };
-  if (entitlementHealth.required && entitlementHealth.status !== 'ready') {
+  if (entitlementHealth.required && entitlementHealth.status === 'unavailable') {
     const error = new Error('The required identity entitlement lifecycle is not ready.');
     error.code = 'IDENTITY_ENTITLEMENT_STORE_UNAVAILABLE';
     error.details = entitlementHealth;
