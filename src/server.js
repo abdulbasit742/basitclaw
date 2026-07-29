@@ -12,6 +12,12 @@ import { PersistenceError } from './persistence/encryptedSnapshotStore.js';
 import { createResilienceSchedulerFromEnvironment } from './resilience/resilienceScheduler.js';
 import { AuthenticationError, AuthorizationError, createAccessController } from './security/accessControl.js';
 import {
+  RateLimitError,
+  classifyRequest,
+  createAdaptiveRateLimiterFromEnvironment
+} from './security/rateLimiter.js';
+import { createSecurityTelemetryFromEnvironment } from './security/securityTelemetry.js';
+import {
   BackupError,
   BackupIntegrityError,
   BackupNotFoundError,
@@ -27,7 +33,9 @@ const dashboardPath = fileURLToPath(new URL('../public/workforce-audit.html', im
 export function createApp({
   registry = createRuntimeWorkforceAuditRegistry(),
   accessController = createAccessController(),
-  resilienceScheduler = null
+  resilienceScheduler = null,
+  rateLimiter = createAdaptiveRateLimiterFromEnvironment(),
+  securityTelemetry = createSecurityTelemetryFromEnvironment()
 } = {}) {
   const scheduler = resilienceScheduler ?? createResilienceSchedulerFromEnvironment({
     registry,
@@ -37,17 +45,24 @@ export function createApp({
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const requestId = randomUUID();
+    const clientAddress = typeof rateLimiter.clientAddress === 'function' ? rateLimiter.clientAddress(req) : 'unknown';
+    let principal = null;
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
         const persistence = registry.getPersistenceHealth();
+        const credentials = typeof accessController.credentialHealth === 'function'
+          ? accessController.credentialHealth()
+          : { status: 'ready', total: accessController.principalCount ?? null, usable: accessController.principalCount ?? null };
         const replicaRequiredFailure = persistence.replicas?.required
           && (persistence.replicas.status !== 'ready' || persistence.replicas.readiness !== 'ready');
         const coordinationFailure = persistence.coordination?.enabled
           && persistence.coordination.status !== 'ready';
+        const credentialFailure = credentials.status !== 'ready';
         const status = persistence.status === 'ready'
           && persistence.backups?.status === 'ready'
           && !replicaRequiredFailure
           && !coordinationFailure
+          && !credentialFailure
           ? 200
           : 503;
         return sendJson(res, status, {
@@ -55,7 +70,12 @@ export function createApp({
           data: {
             status: status === 200 ? 'ok' : 'degraded',
             persistence,
-            scheduler: scheduler.status()
+            scheduler: scheduler.status(),
+            apiSecurity: {
+              credentials,
+              rateLimiting: rateLimiter.health(),
+              telemetry: securityTelemetry.summary()
+            }
           },
           meta: { requestId }
         }, requestId);
@@ -77,14 +97,76 @@ export function createApp({
         return sendJson(res, 404, { success: false, error: 'Route not found.', code: 'NOT_FOUND', meta: { requestId } }, requestId);
       }
 
-      const principal = accessController.authenticate(req);
+      const burstDecision = rateLimiter.consume(`client:${clientAddress}`, 'burst');
+      applyRateDecision(res, rateLimiter, burstDecision);
+      if (!burstDecision.allowed) throw new RateLimitError('The client request burst limit has been exceeded.', burstDecision);
+
+      try {
+        principal = accessController.authenticate(req);
+      } catch (error) {
+        if (error instanceof AuthenticationError) {
+          const failedDecision = rateLimiter.consume(`authentication:${clientAddress}`, 'authFailure');
+          applyRateDecision(res, rateLimiter, failedDecision);
+          safeRecordSecurityEvent(securityTelemetry, {
+            type: 'authentication.failed',
+            severity: error.code === 'UNAUTHENTICATED' ? 'warning' : 'high',
+            outcome: 'denied',
+            requestId,
+            clientAddress,
+            keyId: error.details?.keyId,
+            method: req.method,
+            route: url.pathname,
+            details: { reason: error.details?.reason ?? error.code }
+          });
+          if (!failedDecision.allowed) throw new RateLimitError('Too many failed authentication attempts.', failedDecision);
+        }
+        throw error;
+      }
+
+      const requestPolicy = classifyRequest(req.method, url.pathname);
+      const rateDecision = rateLimiter.consume(
+        `credential:${principal.keyId ?? principal.subject}:client:${clientAddress}`,
+        requestPolicy
+      );
+      applyRateDecision(res, rateLimiter, rateDecision);
+      if (!rateDecision.allowed) throw new RateLimitError('The credential request rate limit has been exceeded.', rateDecision);
+      if (principal.rotationRequired) {
+        setDeferredHeader(res, 'x-api-key-rotation-required', 'true');
+        if (principal.credentialExpiresAt) setDeferredHeader(res, 'x-api-key-expires-at', principal.credentialExpiresAt);
+      }
+
       const service = registry.forTenant(principal.tenantId);
       const context = { actor: principal.subject };
-      const meta = { requestId, tenantId: principal.tenantId };
+      const meta = { requestId, tenantId: principal.tenantId, keyId: principal.keyId };
 
       if (req.method === 'GET' && url.pathname === '/api/workforce-audit/session') {
         accessController.authorise(principal, 'audit:read');
         return sendJson(res, 200, { success: true, data: principal, meta }, requestId);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/workforce-audit/security-status') {
+        accessController.authorise(principal, 'security:read');
+        return sendJson(res, 200, {
+          success: true,
+          data: {
+            credentials: accessController.credentialHealth(),
+            rateLimiting: rateLimiter.health(),
+            telemetry: securityTelemetry.summary()
+          },
+          meta
+        }, requestId);
+      }
+      if (req.method === 'GET' && url.pathname === '/api/workforce-audit/security-events') {
+        accessController.authorise(principal, 'security:read');
+        const limit = parsePositiveInteger(url.searchParams.get('limit'), 100, 500);
+        const data = {
+          events: securityTelemetry.list({
+            limit,
+            type: url.searchParams.get('type'),
+            severity: url.searchParams.get('severity')
+          }),
+          integrity: securityTelemetry.verify()
+        };
+        return sendJson(res, 200, { success: true, data, meta }, requestId);
       }
       if (req.method === 'GET' && url.pathname === '/api/workforce-audit/overview') {
         accessController.authorise(principal, 'audit:read');
@@ -233,12 +315,43 @@ export function createApp({
       }
       return sendJson(res, 404, { success: false, error: 'Route not found.', code: 'NOT_FOUND', meta }, requestId);
     } catch (error) {
+      if (error instanceof RateLimitError) {
+        safeRecordSecurityEvent(securityTelemetry, {
+          type: 'request.rate_limited',
+          severity: error.details?.policy === 'sensitive' || error.details?.policy === 'authFailure' ? 'high' : 'warning',
+          outcome: 'throttled',
+          requestId,
+          clientAddress,
+          keyId: principal?.keyId,
+          subject: principal?.subject,
+          tenantId: principal?.tenantId,
+          method: req.method,
+          route: url.pathname,
+          details: { policy: error.details?.policy, retryAfterSeconds: error.details?.retryAfterSeconds }
+        });
+        return sendJson(res, 429, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId, {
+          'retry-after': String(error.details?.retryAfterSeconds ?? 1)
+        });
+      }
       if (error instanceof AuthenticationError) {
         return sendJson(res, 401, { success: false, error: error.message, code: error.code, meta: { requestId } }, requestId, {
           'www-authenticate': 'ApiKey realm="workforce-audit"'
         });
       }
       if (error instanceof AuthorizationError) {
+        safeRecordSecurityEvent(securityTelemetry, {
+          type: error.details?.reason === 'tenant_override' ? 'tenant.override_attempted' : 'authorization.denied',
+          severity: error.details?.reason === 'tenant_override' ? 'high' : 'warning',
+          outcome: 'denied',
+          requestId,
+          clientAddress,
+          keyId: principal?.keyId ?? error.details?.keyId,
+          subject: principal?.subject,
+          tenantId: principal?.tenantId,
+          method: req.method,
+          route: url.pathname,
+          details: { reason: error.details?.reason, permission: error.details?.permission }
+        });
         return sendJson(res, 403, { success: false, error: error.message, code: error.code, meta: { requestId } }, requestId);
       }
       if (error instanceof ValidationError) {
@@ -282,6 +395,7 @@ export function createApp({
   server.once('listening', () => scheduler.start());
   server.once('close', () => scheduler.stop());
   server.resilienceScheduler = scheduler;
+  server.apiSecurity = { rateLimiter, securityTelemetry };
   return server;
 }
 
@@ -319,12 +433,27 @@ function parsePositiveInteger(value, fallback, maximum) {
   return Math.min(parsed, maximum);
 }
 
+function applyRateDecision(res, rateLimiter, decision) {
+  const headers = typeof rateLimiter.headers === 'function' ? rateLimiter.headers(decision) : {};
+  for (const [name, value] of Object.entries(headers)) setDeferredHeader(res, name, value);
+}
+
+function setDeferredHeader(res, name, value) {
+  res.deferredHeaders ??= {};
+  res.deferredHeaders[name] = value;
+}
+
+function safeRecordSecurityEvent(telemetry, input) {
+  try { telemetry.record(input); } catch (error) { console.error('Security telemetry record failed', error); }
+}
+
 function sendJson(res, status, payload, requestId, additionalHeaders = {}) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
     'x-request-id': requestId,
+    ...(res.deferredHeaders ?? {}),
     ...additionalHeaders
   });
   res.end(JSON.stringify(payload));

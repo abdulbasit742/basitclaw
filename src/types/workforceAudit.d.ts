@@ -8,6 +8,10 @@ export interface AuditPrincipal {
   tenantId: string;
   role: AuditRole;
   permissions: string[];
+  keyId: string;
+  credentialStatus: 'active' | 'retiring' | 'revoked';
+  credentialExpiresAt: string | null;
+  rotationRequired: boolean;
 }
 
 export interface AuditEngagement {
