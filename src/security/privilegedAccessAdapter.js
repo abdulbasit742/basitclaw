@@ -1,12 +1,19 @@
+import { permissionsForRole } from './accessControl.js';
 import {
   PrivilegedAccessError,
   PrivilegedAccessStoreError
 } from './privilegedAccessRegistry.js';
 
-const VALIDATED_METHODS = new Set([
-  'requestAccess', 'approve', 'deny', 'cancel', 'revoke',
-  'activateBreakGlass', 'completePostReview'
-]);
+const PRINCIPAL_ARGUMENT = Object.freeze({
+  requestAccess: 0,
+  approve: 1,
+  deny: 1,
+  cancel: 1,
+  revoke: 1,
+  activateBreakGlass: 0,
+  completePostReview: 1
+});
+const VALIDATED_METHODS = new Set(Object.keys(PRINCIPAL_ARGUMENT));
 
 /**
  * Normalises the public privileged-access contract without caching state.
@@ -49,15 +56,12 @@ export function createPrivilegedAccessAdapter(registry) {
       if (VALIDATED_METHODS.has(property)) {
         return (...args) => {
           try {
+            validatePrincipal(args[PRINCIPAL_ARGUMENT[property]]);
             return value.apply(target, args);
           } catch (error) {
-            if (error instanceof TypeError) {
-              throw new PrivilegedAccessError(
-                error.message,
-                'PRIVILEGED_ACCESS_INPUT_INVALID',
-                {},
-                400
-              );
+            if (error instanceof TypeError) throw inputError(error.message);
+            if (error instanceof PrivilegedAccessStoreError && looksLikeValidationFailure(error.details?.cause)) {
+              throw inputError(String(error.details.cause));
             }
             throw error;
           }
@@ -67,4 +71,30 @@ export function createPrivilegedAccessAdapter(registry) {
       return value.bind(target);
     }
   });
+}
+
+function validatePrincipal(principal) {
+  const subject = String(principal?.subject ?? '').trim();
+  const tenantId = String(principal?.tenantId ?? '').trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{1,255}$/.test(subject)) {
+    throw new TypeError('subject must be a safe identifier.');
+  }
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,127}$/.test(tenantId)) {
+    throw new TypeError('tenantId must be a safe identifier.');
+  }
+  permissionsForRole(String(principal?.role ?? ''));
+}
+
+function looksLikeValidationFailure(cause) {
+  const value = String(cause ?? '');
+  return /must (?:be|contain)|Unsupported workforce-audit role|required\.|safe identifier|unsupported credential status/i.test(value);
+}
+
+function inputError(message) {
+  return new PrivilegedAccessError(
+    message,
+    'PRIVILEGED_ACCESS_INPUT_INVALID',
+    {},
+    400
+  );
 }
