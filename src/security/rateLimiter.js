@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { createSharedFileRateLimiter } from './sharedRateLimiter.js';
 
 const DEFAULT_POLICIES = Object.freeze({
   burst: { limit: 300, windowMs: 60_000 },
@@ -22,7 +23,8 @@ export function createAdaptiveRateLimiter({
   policies = DEFAULT_POLICIES,
   enabled = true,
   trustProxyHops = 0,
-  maxBuckets = 20_000
+  maxBuckets = 20_000,
+  distributedRequired = false
 } = {}) {
   const safePolicies = normalisePolicies(policies);
   const buckets = new Map();
@@ -51,7 +53,8 @@ export function createAdaptiveRateLimiter({
       limit: policy.limit,
       remaining: Math.max(0, policy.limit - entry.count),
       resetAt: new Date(resetAt).toISOString(),
-      retryAfterSeconds: Math.max(1, Math.ceil((resetAt - currentMs) / 1000))
+      retryAfterSeconds: Math.max(1, Math.ceil((resetAt - currentMs) / 1000)),
+      distributed: false
     };
   }
 
@@ -70,6 +73,7 @@ export function createAdaptiveRateLimiter({
       enabled,
       mode: enabled ? 'local-memory-fixed-window' : 'disabled',
       distributed: false,
+      required: Boolean(distributedRequired),
       trustProxyHops: trustedHops,
       activeBuckets: buckets.size,
       policies: structuredClone(safePolicies)
@@ -94,20 +98,38 @@ export function createAdaptiveRateLimiter({
 
 export function createAdaptiveRateLimiterFromEnvironment(env = process.env) {
   const mode = String(env.WORKFORCE_AUDIT_RATE_LIMIT_MODE ?? 'memory');
-  if (!['memory', 'disabled'].includes(mode)) {
-    throw new TypeError('WORKFORCE_AUDIT_RATE_LIMIT_MODE must be memory or disabled.');
+  if (!['memory', 'shared-file', 'disabled'].includes(mode)) {
+    throw new TypeError('WORKFORCE_AUDIT_RATE_LIMIT_MODE must be memory, shared-file, or disabled.');
   }
-  return createAdaptiveRateLimiter({
-    enabled: mode === 'memory',
-    trustProxyHops: Number(env.WORKFORCE_AUDIT_TRUST_PROXY_HOPS ?? 0),
-    policies: {
-      burst: { limit: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_BURST_PER_MINUTE ?? 300), windowMs: 60_000 },
-      authFailure: { limit: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_AUTH_FAILURES_PER_5_MINUTES ?? 8), windowMs: 300_000 },
-      read: { limit: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_READ_PER_MINUTE ?? 240), windowMs: 60_000 },
-      write: { limit: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_WRITE_PER_MINUTE ?? 60), windowMs: 60_000 },
-      sensitive: { limit: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_SENSITIVE_PER_15_MINUTES ?? 10), windowMs: 900_000 }
-    }
-  });
+  const distributedRequired = env.WORKFORCE_AUDIT_DISTRIBUTED_RATE_LIMIT_REQUIRED !== undefined
+    ? String(env.WORKFORCE_AUDIT_DISTRIBUTED_RATE_LIMIT_REQUIRED) === 'true'
+    : env.NODE_ENV === 'production' && env.WORKFORCE_AUDIT_COORDINATION_MODE === 'file-lease';
+  if (distributedRequired && mode !== 'shared-file') {
+    throw new TypeError('A shared-file rate limiter is required for this multi-process deployment.');
+  }
+  const policies = {
+    burst: { limit: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_BURST_PER_MINUTE ?? 300), windowMs: 60_000 },
+    authFailure: { limit: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_AUTH_FAILURES_PER_5_MINUTES ?? 8), windowMs: 300_000 },
+    read: { limit: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_READ_PER_MINUTE ?? 240), windowMs: 60_000 },
+    write: { limit: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_WRITE_PER_MINUTE ?? 60), windowMs: 60_000 },
+    sensitive: { limit: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_SENSITIVE_PER_15_MINUTES ?? 10), windowMs: 900_000 }
+  };
+  const trustProxyHops = Number(env.WORKFORCE_AUDIT_TRUST_PROXY_HOPS ?? 0);
+  if (mode === 'shared-file') {
+    return createSharedFileRateLimiter({
+      directory: env.WORKFORCE_AUDIT_RATE_LIMIT_DIR ?? '.runtime-data/workforce-audit-rate-limits',
+      policies,
+      trustProxyHops,
+      resolveClientAddress,
+      maxBuckets: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_MAX_BUCKETS ?? 100_000),
+      cleanupIntervalMs: Number(env.WORKFORCE_AUDIT_RATE_LIMIT_CLEANUP_INTERVAL_MS ?? 300_000),
+      lockLeaseMs: Number(env.WORKFORCE_AUDIT_SECURITY_CONTROL_LOCK_MS ?? 10_000),
+      lockAcquireTimeoutMs: Number(env.WORKFORCE_AUDIT_SECURITY_CONTROL_ACQUIRE_TIMEOUT_MS ?? 2_000),
+      lockRetryMs: Number(env.WORKFORCE_AUDIT_SECURITY_CONTROL_RETRY_MS ?? 10),
+      required: distributedRequired
+    });
+  }
+  return createAdaptiveRateLimiter({ enabled: mode === 'memory', trustProxyHops, policies, distributedRequired });
 }
 
 export function classifyRequest(method, pathname) {
@@ -162,5 +184,5 @@ function normaliseInteger(value, field, minimum, maximum) {
 }
 
 function decisionForDisabled(policy, currentMs) {
-  return { allowed: true, policy, limit: null, remaining: null, resetAt: new Date(currentMs).toISOString(), retryAfterSeconds: 0 };
+  return { allowed: true, policy, limit: null, remaining: null, resetAt: new Date(currentMs).toISOString(), retryAfterSeconds: 0, distributed: false };
 }
