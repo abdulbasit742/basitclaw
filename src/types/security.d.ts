@@ -30,10 +30,7 @@ export interface CredentialHealth {
   nextExpiryAt: string | null;
 }
 
-export interface RateLimitPolicy {
-  limit: number;
-  windowMs: number;
-}
+export interface RateLimitPolicy { limit: number; windowMs: number; }
 
 export interface RateLimitDecision {
   allowed: boolean;
@@ -42,16 +39,21 @@ export interface RateLimitDecision {
   remaining: number | null;
   resetAt: string;
   retryAfterSeconds: number;
+  distributed: boolean;
 }
 
 export interface RateLimitHealth {
-  status: 'ready' | 'disabled';
+  status: 'ready' | 'degraded' | 'unavailable' | 'disabled';
   enabled: boolean;
-  mode: 'local-memory-fixed-window' | 'disabled';
-  distributed: false;
+  mode: 'local-memory-fixed-window' | 'shared-file-fixed-window' | 'disabled';
+  distributed: boolean;
+  required: boolean;
   trustProxyHops: number;
-  activeBuckets: number;
+  activeBuckets: number | null;
+  maxBuckets?: number;
+  directory?: string;
   policies: Record<RateLimitPolicyName, RateLimitPolicy>;
+  error?: string | null;
 }
 
 export interface SecurityEvent {
@@ -73,22 +75,72 @@ export interface SecurityEvent {
   hash: string;
 }
 
+export interface SecurityArchiveManifest {
+  archiveId: string;
+  sequence: number;
+  writtenAt: string;
+  sourceEventId: string | null;
+  segment: string;
+  hash: string;
+  previousHash: string | null;
+  keyId: string;
+}
+
+export interface ArchivedSecurityEvent extends SecurityEvent { archive: SecurityArchiveManifest; }
+
+export interface SecurityArchiveIntegrity {
+  valid: boolean;
+  anchorSequence?: number;
+  retainedEvents?: number;
+  headSequence?: number;
+  headHash?: string | null;
+  failedArchiveId?: string | null;
+  error?: string;
+  disabled?: boolean;
+}
+
+export interface SecurityArchiveHealth {
+  status: 'ready' | 'unavailable' | 'disabled';
+  enabled: boolean;
+  required: boolean;
+  mode: 'shared-file-encrypted-hash-chain' | 'disabled';
+  durable: boolean;
+  distributed: boolean;
+  encrypted: boolean;
+  directory?: string;
+  keyId?: string;
+  retentionDays?: number;
+  maxSegmentBytes?: number;
+  retainedSegments?: number;
+  anchorSequence?: number;
+  headSequence?: number;
+  lastArchivedAt?: string | null;
+  integrity?: SecurityArchiveIntegrity;
+  error?: string | null;
+  failures?: number;
+  lastError?: string | null;
+}
+
+export interface SecurityArchiveExport {
+  events: ArchivedSecurityEvent[];
+  anchorSequence: number;
+  headSequence: number;
+  nextSequence: number;
+}
+
 export interface SecurityTelemetrySummary {
-  status: 'ready';
-  mode: 'bounded-memory-hash-chain';
-  durable: false;
+  status: 'ready' | 'unavailable';
+  mode: 'bounded-memory-hash-chain' | 'bounded-memory-plus-encrypted-archive';
+  durable: boolean;
+  distributed: boolean;
   ephemeralPepper: boolean;
   retainedEvents: number;
   maxEvents: number;
   lastEventAt: string | null;
   countsByType: Record<string, number>;
   countsBySeverity: Record<string, number>;
-  integrity: {
-    valid: boolean;
-    retainedEvents: number;
-    failedEventId: string | null;
-    headHash: string | null;
-  };
+  integrity: { valid: boolean; retainedEvents: number; failedEventId: string | null; headHash: string | null; };
+  archive: SecurityArchiveHealth;
 }
 
 export interface ApiSecurityStatus {
