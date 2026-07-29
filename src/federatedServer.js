@@ -94,9 +94,11 @@ export function createFederatedApp({
     const clientAddress = typeof rateLimiter.clientAddress === 'function' ? rateLimiter.clientAddress(req) : 'unknown';
     try {
       const principal = await authenticationGateway.authenticate(req);
-      if (privilegedRoute) return privilegedAccessHandler.handle(req, res, principal, requestId);
-      if (protectedPermission) privilegedAccess.authorise(principal, protectedPermission);
-      authenticatedRequests.set(req, principal);
+      if (privilegedRoute) return await privilegedAccessHandler.handle(req, res, principal, requestId);
+      const effectivePrincipal = protectedPermission
+        ? privilegedAccess.authorise(principal, protectedPermission)
+        : principal;
+      authenticatedRequests.set(req, effectivePrincipal);
       return innerHandler(req, res);
     } catch (error) {
       if (error instanceof IdentityEntitlementError) {
@@ -218,7 +220,7 @@ export function createFederatedApp({
     ...inner.apiSecurity,
     authenticationGateway,
     identityEntitlements,
-    privilegedAccess: privilegedAccessHandler.health(),
+    get privilegedAccess() { return privilegedAccessHandler.health(); },
     scim: scimHandler?.health?.() ?? { status: 'disabled' }
   };
   server.authenticationGateway = authenticationGateway;
@@ -240,7 +242,11 @@ function createTrustedAccessController(gateway, authenticatedRequests) {
       const apiPrincipal = gateway.apiKeyController.authenticate(req);
       return Object.freeze({ ...apiPrincipal, authMethod: apiPrincipal.authMethod ?? 'api_key' });
     },
-    authorise: (principal, permission) => gateway.authorise(principal, permission),
+    authorise(principal, permission) {
+      const granted = principal?.privilegedAccess?.status === 'active'
+        && principal.privilegedAccess.permissions?.includes(permission);
+      return granted ? principal : gateway.authorise(principal, permission);
+    },
     tenantIds: () => gateway.tenantIds(),
     credentialHealth: () => gateway.credentialHealth(),
     principalCount: gateway.principalCount
