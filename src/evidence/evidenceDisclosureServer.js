@@ -11,9 +11,10 @@ export function createEvidenceDisclosureAwareApp({
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
   baseApp = createEvidenceTimeAttestationAwareApp({ env, evidenceRegistry, rateLimiter }),
   securityTelemetry = baseApp.apiSecurity?.securityTelemetry,
+  disclosureAuthenticationGateway = createDisclosureAuthenticationGateway(baseApp.authenticationGateway),
   disclosureHandler = createEvidenceDisclosureHandler({
     registry: evidenceRegistry,
-    authenticationGateway: baseApp.authenticationGateway,
+    authenticationGateway: disclosureAuthenticationGateway,
     rateLimiter,
     securityTelemetry
   })
@@ -60,6 +61,7 @@ export function createEvidenceDisclosureAwareApp({
   server.resilienceScheduler = baseApp.resilienceScheduler;
   server.apiSecurity = baseApp.apiSecurity;
   server.authenticationGateway = baseApp.authenticationGateway;
+  server.disclosureAuthenticationGateway = disclosureAuthenticationGateway;
   server.identityEntitlements = baseApp.identityEntitlements;
   server.privilegedAccess = baseApp.privilegedAccess;
   server.scimHandler = baseApp.scimHandler;
@@ -75,4 +77,23 @@ export function createEvidenceDisclosureAwareApp({
   server.evidenceDisclosureHandler = disclosureHandler;
   server.auditRegistry = baseApp.auditRegistry;
   return server;
+}
+
+function createDisclosureAuthenticationGateway(authenticationGateway) {
+  if (!authenticationGateway || typeof authenticationGateway.authenticate !== 'function'
+      || typeof authenticationGateway.authorise !== 'function') {
+    throw new TypeError('The disclosure runtime requires an authentication gateway.');
+  }
+  return Object.freeze({
+    mode: authenticationGateway.mode,
+    authenticate: (...args) => authenticationGateway.authenticate(...args),
+    authorise(principal, permission) {
+      const mapped = permission === 'evidence:disclose:revoke'
+        ? 'privileged:revoke'
+        : permission === 'evidence:disclose:request' || permission === 'evidence:disclose:approve'
+          ? 'evidence:preserve'
+          : permission;
+      return authenticationGateway.authorise(principal, mapped);
+    }
+  });
 }
