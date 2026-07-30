@@ -11,24 +11,26 @@ export function createEvidenceDisclosurePackageAwareApp({
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
   baseApp = createEvidenceTimeAttestationAwareApp({ env, evidenceRegistry, rateLimiter }),
   securityTelemetry = baseApp.apiSecurity?.securityTelemetry,
-  disclosureHandler = createEvidenceDisclosurePackageHandler({
-    registry: evidenceRegistry,
-    authenticationGateway: baseApp.authenticationGateway,
-    rateLimiter,
-    securityTelemetry
-  })
+  disclosureHandler = null
 } = {}) {
   if (evidenceRegistry.evidenceDisclosureEnabled && !evidenceRegistry.enabled) {
     throw new TypeError('Evidence disclosure packages require enabled evidence custody.');
   }
   const baseHandler = baseApp.listeners('request')[0];
   if (typeof baseHandler !== 'function') throw new TypeError('The time-attestation application must expose a request handler.');
+  const exportAuthenticationGateway = createExportAuthenticationGateway(baseApp.authenticationGateway);
+  const handler = disclosureHandler ?? createEvidenceDisclosurePackageHandler({
+    registry: evidenceRegistry,
+    authenticationGateway: exportAuthenticationGateway,
+    rateLimiter,
+    securityTelemetry
+  });
 
   const server = createServer(async (req, res) => {
     const requestId = randomUUID();
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
-      if (disclosureHandler.matches(url.pathname)) return await disclosureHandler.handle(req, res, requestId);
+      if (handler.matches(url.pathname)) return await handler.handle(req, res, requestId);
       return await baseHandler(req, res);
     } catch (error) {
       console.error('Unhandled evidence disclosure server error', {
@@ -59,6 +61,7 @@ export function createEvidenceDisclosurePackageAwareApp({
   server.resilienceScheduler = baseApp.resilienceScheduler;
   server.apiSecurity = baseApp.apiSecurity;
   server.authenticationGateway = baseApp.authenticationGateway;
+  server.evidenceDisclosureAuthenticationGateway = exportAuthenticationGateway;
   server.identityEntitlements = baseApp.identityEntitlements;
   server.privilegedAccess = baseApp.privilegedAccess;
   server.scimHandler = baseApp.scimHandler;
@@ -71,7 +74,28 @@ export function createEvidenceDisclosurePackageAwareApp({
   server.externalScanJobDeliveryHandler = baseApp.externalScanJobDeliveryHandler;
   server.evidencePreservationHandler = baseApp.evidencePreservationHandler;
   server.evidenceTimeAttestationHandler = baseApp.evidenceTimeAttestationHandler;
-  server.evidenceDisclosurePackageHandler = disclosureHandler;
+  server.evidenceDisclosurePackageHandler = handler;
   server.auditRegistry = baseApp.auditRegistry;
   return server;
+}
+
+function createExportAuthenticationGateway(authenticationGateway) {
+  if (!authenticationGateway || typeof authenticationGateway.authenticate !== 'function') {
+    throw new TypeError('An authentication gateway is required for evidence disclosure.');
+  }
+  return Object.freeze({
+    mode: authenticationGateway.mode,
+    async authenticate(req) {
+      const principal = await authenticationGateway.authenticate(req);
+      const existing = Array.isArray(principal.permissions) ? principal.permissions : [];
+      const canDeriveExport = existing.includes('governance:read') && existing.includes('evidence:preserve');
+      const permissions = canDeriveExport && !existing.includes('evidence:export')
+        ? [...existing, 'evidence:export']
+        : existing;
+      return Object.freeze({ ...principal, permissions });
+    },
+    authorise(principal, permission) {
+      return authenticationGateway.authorise(principal, permission);
+    }
+  });
 }
