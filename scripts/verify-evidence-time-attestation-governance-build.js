@@ -44,11 +44,12 @@ await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceServer.js', 
   "permission === 'evidence:notary-govern' ? 'evidence:preserve'",
   'evidenceTimeAttestationGovernanceHandler', 'resilienceScheduler'
 ]);
-await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js', 'Governance outer composition', [
+await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js', 'Governance assurance composition', [
   'createEvidenceTimeAttestationGovernanceAwareApp',
   'evidenceTimeAttestationGovernanceHandler'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Outermost evidence runtime', ['createEvidenceAssuranceBundleAwareApp']);
+await requireMarkers('src/sampling/auditSamplingServer.js', 'Governance outer sampling composition', ['createEvidenceAssuranceBundleAwareApp']);
+await requireMarkers('src/evidenceRuntime.js', 'Outermost evidence runtime', ['createAuditSamplingAwareApp']);
 await requireMarkers('test/evidenceTimeAttestationGovernance.test.js', 'Notary governance regressions', [
   'prospective provider revocation preserves earlier proof',
   'retroactive key compromise excludes historical attestations',

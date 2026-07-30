@@ -44,7 +44,8 @@ await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js', 'Assurance
   'evidenceAssuranceBundleHandler',
   'require enabled encrypted evidence custody'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Assurance bundle runtime', ['createEvidenceAssuranceBundleAwareApp']);
+await requireMarkers('src/sampling/auditSamplingServer.js', 'Assurance bundle outer composition', ['createEvidenceAssuranceBundleAwareApp']);
+await requireMarkers('src/evidenceRuntime.js', 'Sampling runtime', ['createAuditSamplingAwareApp']);
 await requireMarkers('src/security/accessControl.js', 'Assurance bundle permission', ['evidence:export']);
 await requireMarkers('docs/evidence-assurance-bundles.md', 'Assurance bundle runbook', [
   'Pass 21', 'never sends bundles to arbitrary URLs', 'recipient private key',
