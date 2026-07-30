@@ -1,5 +1,5 @@
 import { EvidenceConflictError, EvidenceValidationError } from './evidenceRegistry.js';
-import { createEvidenceTimeAttestationRegistryFromEnvironment } from './evidenceTimeAttestationRegistry.js';
+import { createEvidenceTimeAttestationGovernanceRegistryFromEnvironment } from './evidenceTimeAttestationGovernanceRegistry.js';
 import {
   createEvidenceTimeAttestationRequestOutbox,
   createEvidenceTimeAttestationRequestOutboxFromEnvironment
@@ -153,7 +153,7 @@ export function createEvidenceTimeAttestationRequestRegistry({
 }
 
 export function createEvidenceTimeAttestationRequestRegistryFromEnvironment(env = process.env) {
-  const registry = createEvidenceTimeAttestationRegistryFromEnvironment(env);
+  const registry = createEvidenceTimeAttestationGovernanceRegistryFromEnvironment(env);
   const notaryRequests = createEvidenceTimeAttestationRequestOutboxFromEnvironment({ env });
   if (notaryRequests.enabled && !registry.evidenceTimeAttestationEnabled) {
     throw new TypeError('Evidence-notary request delivery requires enabled time attestations.');
