@@ -40,8 +40,8 @@ export function createExternalScanJobDeliveryHandler({ registry, rateLimiter = n
       else {
         const ack = url.pathname.match(ACK_ROUTE);
         const failed = url.pathname.match(FAIL_ROUTE);
-        if (ack) data = registry.acknowledgeExternalScanJob(decodeURIComponent(ack[1]), body, req.headers);
-        else if (failed) data = registry.failExternalScanJob(decodeURIComponent(failed[1]), body, req.headers);
+        if (ack) data = registry.acknowledgeExternalScanJob(decodePathSegment(ack[1], 'jobId'), body, req.headers);
+        else if (failed) data = registry.failExternalScanJob(decodePathSegment(failed[1], 'jobId'), body, req.headers);
         else return notFound(res, requestId);
       }
       record(securityTelemetry, {
@@ -87,6 +87,10 @@ async function readBody(req, maximumBytes) {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
+}
+function decodePathSegment(value, field) {
+  try { return decodeURIComponent(value); }
+  catch { throw new EvidenceValidationError(`The ${field} path segment contains invalid percent encoding.`, { field }); }
 }
 function applyRateHeaders(res, limiter, decision) { const headers = typeof limiter?.headers === 'function' ? limiter.headers(decision) : {}; for (const [name, value] of Object.entries(headers)) res.setHeader(name, value); }
 function rateLimited(res, requestId, decision) { return sendJson(res, 429, { success: false, error: 'The external scanner delivery rate limit has been exceeded.', code: 'RATE_LIMITED', details: decision, meta: { requestId } }, requestId, { 'retry-after': String(decision.retryAfterSeconds ?? 1) }); }
