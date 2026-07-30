@@ -23,7 +23,8 @@ async function requireMarkers(path, label, markers) {
 await requireMarkers('src/regulatory/regulatoryCaseStore.js', 'Regulatory case store', [
   'basitclaw-regulatory-case-register',
   'regulator_request', 'external_audit', 'legal_request', 'certification_review',
-  'SUBMIT RESPONSE', 'APPROVE RESPONSE', 'CLOSE CASE', 'CANCEL CASE',
+  'SUBMIT RESPONSE', 'APPROVE RESPONSE',
+  "target === 'closed' ? 'CLOSE' : 'CANCEL'", '`${verb} CASE',
   'self_approval', 'closure_separation',
   'deadlineState', 'due_soon', 'overdue',
   'encryptEvidenceJson', 'verifyEventChain', 'hashLinkedEvents: true',
