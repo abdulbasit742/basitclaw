@@ -6,7 +6,8 @@ await requireMarkers('src/evidence/evidencePreservationStore.js','Evidence prese
 await requireMarkers('src/evidence/evidencePreservationRegistry.js','Evidence preservation composition',['confirmation must be exactly PRESERVE','missingVersions','requiredForDisposition','evidencePreservationStatus','indexReceipts','versionReady','preservation.verifyTenant','createEvidencePreservationRegistryFromEnvironment']);
 await requireMarkers('src/evidence/evidencePreservationHandler.js','Evidence preservation API',['/api/workforce-audit/evidence-preservation/status','/preservations','evidence:preserve','decodeSegment','EVIDENCE_PRESERVATION_BUSY']);
 await requireMarkers('src/evidence/evidencePreservationServer.js','Evidence preservation server',['createExternalScanAwareApp','evidencePreservationHandler','resilienceScheduler']);
-await requireMarkers('src/evidenceRuntime.js','Composed evidence runtime',['createEvidenceAssuranceBundleAwareApp']);
+await requireMarkers('src/evidenceRuntime.js','Composed evidence runtime',['createRegulatoryCaseAwareApp']);
+await requireMarkers('src/regulatory/regulatoryCaseServer.js','Regulatory outer composition',['createEvidenceAssuranceBundleAwareApp']);
 await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js','Assurance runtime composition',['createEvidenceTimeAttestationGovernanceAwareApp']);
 await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceServer.js','Governed time-attestation runtime composition',['createEvidenceTimeAttestationAwareApp']);
 await requireMarkers('src/evidence/evidenceTimeAttestationServer.js','Time-attestation runtime composition',['createEvidencePreservationAwareApp']);

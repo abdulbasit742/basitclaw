@@ -5,7 +5,8 @@ async function requireMarkers(path, label, markers) { const content = await read
 await requireMarkers('src/evidence/evidenceScreeningEngine.js','Screening engine',['MALWARE_EICAR_TEST_SIGNATURE','DLP_PRIVATE_KEY_MATERIAL','CONTENT_TYPE_EXTENSION_MISMATCH','CONTAINER_REQUIRES_DEEP_SCAN','wouldQuarantine','WORKFORCE_AUDIT_EVIDENCE_SCREENING_MODE']);
 await requireMarkers('src/evidence/evidenceScreeningRegistry.js','Screening registry',['encryptEvidenceJson','EVIDENCE_QUARANTINED','RELEASE QUARANTINE','REJECT EVIDENCE','screening.quarantine_released','assertVersionAccessible']);
 await requireMarkers('src/evidence/evidenceHandler.js','Screening API',['/screening','screeningEvents','releaseQuarantine','rejectQuarantine','evidence.quarantine_released']);
-await requireMarkers('src/evidenceRuntime.js','Composed evidence runtime',['createEvidenceAssuranceBundleAwareApp']);
+await requireMarkers('src/evidenceRuntime.js','Composed evidence runtime',['createRegulatoryCaseAwareApp']);
+await requireMarkers('src/regulatory/regulatoryCaseServer.js','Regulatory runtime composition',['createEvidenceAssuranceBundleAwareApp']);
 await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js','Assurance runtime composition',['createEvidenceTimeAttestationGovernanceAwareApp']);
 await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceServer.js','Governed time-attestation runtime composition',['createEvidenceTimeAttestationAwareApp']);
 await requireMarkers('src/evidence/evidenceTimeAttestationServer.js','Time-attestation runtime composition',['createEvidencePreservationAwareApp']);
