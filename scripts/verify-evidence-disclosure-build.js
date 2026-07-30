@@ -10,6 +10,7 @@ const requiredFiles = [
   'test/evidenceDisclosurePackageStore.test.js',
   'test/evidenceDisclosurePackageHttp.test.js',
   'docs/evidence-disclosure-packages.md',
+  'config/evidence-disclosure.development.env.example',
   'config/evidence-screening.production.env.example'
 ];
 for (const file of requiredFiles) await access(new URL(`../${file}`, import.meta.url));
@@ -36,10 +37,13 @@ await requireMarkers('src/evidence/evidenceDisclosurePackageRegistry.js', 'Discl
   'metadataOnlyDefault: true',
   'arbitraryRecipientKeysAccepted: false',
   'plaintextPackagePersisted: false',
+  'revokedOrSupersededAttestationsExcludedFromOperationalQuorum: true',
   'unsupported field',
   'screeningReports', 'externalScanAttestations',
-  'preservationReceipts', 'timeAttestations',
+  'preservationReceipts', 'timeAttestationGovernance',
+  'effectiveArchiveVerification',
   'registry.readContent',
+  'createEvidenceTimeAttestationGovernanceRegistryFromEnvironment',
   'createEvidenceDisclosurePackageRegistryFromEnvironment'
 ]);
 await requireMarkers('src/evidence/evidenceDisclosurePackageHandler.js', 'Disclosure package API', [
@@ -51,10 +55,11 @@ await requireMarkers('src/evidence/evidenceDisclosurePackageHandler.js', 'Disclo
   'EVIDENCE_DISCLOSURE_BUSY'
 ]);
 await requireMarkers('src/evidence/evidenceDisclosurePackageServer.js', 'Disclosure package server', [
-  'createEvidenceTimeAttestationAwareApp',
+  'createEvidenceTimeAttestationGovernanceAwareApp',
   'createExportAuthenticationGateway',
   "existing.includes('evidence:preserve')",
   "'evidence:export'",
+  'evidenceTimeAttestationGovernanceHandler',
   'evidenceDisclosurePackageHandler',
   'resilienceScheduler'
 ]);
@@ -73,7 +78,8 @@ await requireMarkers('test/evidenceDisclosurePackageStore.test.js', 'Disclosure 
   'only encrypted receipts persist',
   'decrypt only with the configured recipient',
   'package tampering',
-  'Metadata package for audit committee'
+  'Metadata package for audit committee',
+  'operationally acceptable notary decisions'
 ]);
 await requireMarkers('docs/evidence-disclosure-packages.md', 'Disclosure package runbook', [
   'metadata-only',
@@ -81,6 +87,7 @@ await requireMarkers('docs/evidence-disclosure-packages.md', 'Disclosure package
   'pre-approved recipient',
   'offline verifier',
   'does not establish legal admissibility',
+  'revoked or superseded',
   'never stored'
 ]);
 await requireMarkers('config/evidence-screening.production.env.example', 'Production disclosure configuration', [
@@ -88,6 +95,7 @@ await requireMarkers('config/evidence-screening.production.env.example', 'Produc
   'WORKFORCE_AUDIT_EVIDENCE_DISCLOSURE_KEYS=',
   'WORKFORCE_AUDIT_EVIDENCE_DISCLOSURE_SIGNING_KEYS=',
   'WORKFORCE_AUDIT_EVIDENCE_DISCLOSURE_RECIPIENTS=',
+  'WORKFORCE_AUDIT_EVIDENCE_NOTARY_GOVERNANCE_MODE=shared-file',
   'evidence:export'
 ]);
 
