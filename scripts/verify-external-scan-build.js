@@ -41,7 +41,10 @@ await requireMarkers('src/evidence/externalScanManagementHandler.js', 'External 
   '/api/workforce-audit/external-scanner/status', '/external-scans',
   'governance:read', 'authFailure', 'external-scan-management'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Composed evidence runtime', [
+await requireMarkers('src/evidenceRuntime.js', 'Outermost audit runtime', [
+  'createAuditTestProgrammeAwareApp'
+]);
+await requireMarkers('src/auditTestProgrammeServer.js', 'Test-programme runtime composition', [
   'createEvidenceTimeAttestationAwareApp'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-attestation runtime composition', [
