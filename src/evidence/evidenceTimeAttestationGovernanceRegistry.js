@@ -115,12 +115,58 @@ export function createEvidenceTimeAttestationGovernanceRegistry({
     return effectiveArchiveVerification(tenantId, archiveId);
   }
 
+  function currentOperationalPosture(tenantId, evidenceId = null) {
+    const items = evidenceId
+      ? [registry.get(tenantId, evidenceId)]
+      : registry.list(tenantId, { limit: 5000 });
+    const missingPreservations = [];
+    const missingOperationalQuorum = [];
+    let totalVersions = 0;
+    let preservedVersions = 0;
+    let operationalQuorumVersions = 0;
+
+    for (const item of items) {
+      if (item.status === 'disposed') continue;
+      for (const version of item.versions ?? []) {
+        totalVersions += 1;
+        const receipt = registry.evidencePreservationStore.verifiedForVersion(
+          tenantId, item.evidenceId, version.version, version.sha256, item.retentionUntil
+        );
+        if (!receipt) {
+          missingPreservations.push({ evidenceId: item.evidenceId, version: version.version });
+          continue;
+        }
+        preservedVersions += 1;
+        const verification = effectiveArchiveVerification(tenantId, receipt.archiveId);
+        if (verification.operationalQuorumSatisfied) operationalQuorumVersions += 1;
+        else {
+          missingOperationalQuorum.push({
+            evidenceId: item.evidenceId,
+            version: version.version,
+            archiveId: receipt.archiveId,
+            acceptableDistinctProviders: verification.acceptableDistinctProviders,
+            minimumProviders: verification.minimumProviders,
+            rejectedAttestations: verification.rejectedAttestations
+          });
+        }
+      }
+    }
+    return {
+      totalVersions,
+      preservedVersions,
+      operationalQuorumVersions,
+      missingPreservations,
+      missingOperationalQuorum
+    };
+  }
+
   function evidenceTimeAttestationGovernanceStatus(tenantId) {
     const base = registry.evidenceTimeAttestationStatus(tenantId);
     const journal = governance.tenantStatus(tenantId);
     if (!governance.enabled) return { ...journal, cryptographic: base };
     const recent = registry.evidenceTimeAttestationStore.list(tenantId, { limit: 5000 });
     const evaluation = governance.evaluate(tenantId, recent);
+    const posture = currentOperationalPosture(tenantId);
     let acceptableAttestations = 0;
     let revokedAttestations = 0;
     let supersededAttestations = 0;
@@ -136,33 +182,24 @@ export function createEvidenceTimeAttestationGovernanceRegistry({
       acceptableAttestations,
       revokedAttestations,
       supersededAttestations,
-      dispositionReady: !governance.requiredForDisposition || base.dispositionReady
+      totalVersions: posture.totalVersions,
+      preservedVersions: posture.preservedVersions,
+      operationalQuorumVersions: posture.operationalQuorumVersions,
+      missingPreservationCount: posture.missingPreservations.length,
+      missingOperationalQuorumCount: posture.missingOperationalQuorum.length,
+      dispositionReady: !governance.requiredForDisposition
+        || (posture.missingPreservations.length === 0 && posture.missingOperationalQuorum.length === 0)
     };
   }
 
   function dispose(tenantId, evidenceId, input, context = {}) {
     if (governance.requiredForDisposition) {
       const item = registry.get(tenantId, evidenceId);
-      const missingOperationalQuorum = [];
-      for (const version of item.versions ?? []) {
-        const receipt = registry.evidencePreservationStore.verifiedForVersion(
-          tenantId, item.evidenceId, version.version, version.sha256, item.retentionUntil
-        );
-        if (!receipt) continue;
-        const verification = effectiveArchiveVerification(tenantId, receipt.archiveId);
-        if (!verification.operationalQuorumSatisfied) {
-          missingOperationalQuorum.push({
-            version: version.version,
-            archiveId: receipt.archiveId,
-            acceptableDistinctProviders: verification.acceptableDistinctProviders,
-            minimumProviders: verification.minimumProviders,
-            rejectedAttestations: verification.rejectedAttestations
-          });
-        }
-      }
-      if (missingOperationalQuorum.length) {
+      const posture = currentOperationalPosture(tenantId, item.evidenceId);
+      if (posture.missingPreservations.length || posture.missingOperationalQuorum.length) {
         throw new EvidenceTimeAttestationGovernanceRequiredError(item.evidenceId, {
-          missingOperationalQuorum
+          missingPreservations: posture.missingPreservations.map((entry) => entry.version),
+          missingOperationalQuorum: posture.missingOperationalQuorum
         });
       }
     }
@@ -173,14 +210,15 @@ export function createEvidenceTimeAttestationGovernanceRegistry({
     const base = registry.verify(tenantId, evidenceId);
     const journal = governance.verifyTenant(tenantId);
     if (!evidenceId || !governance.enabled) return { ...base, timeAttestationGovernance: journal };
-    const receipts = registry.evidencePreservationReceipts(tenantId, evidenceId, { limit: 100_000 });
-    const archives = receipts.map((receipt) => effectiveArchiveVerification(tenantId, receipt.archiveId));
+    const posture = currentOperationalPosture(tenantId, evidenceId);
     return {
       ...base,
       timeAttestationGovernance: {
         ...journal,
-        checkedArchives: archives.length,
-        operationalQuorumArchives: archives.filter((entry) => entry.operationalQuorumSatisfied).length
+        checkedArchives: posture.preservedVersions,
+        operationalQuorumArchives: posture.operationalQuorumVersions,
+        missingPreservationCount: posture.missingPreservations.length,
+        missingOperationalQuorumCount: posture.missingOperationalQuorum.length
       }
     };
   }
@@ -202,9 +240,12 @@ export function createEvidenceTimeAttestationGovernanceRegistry({
     try {
       const journal = evidenceTimeAttestationGovernanceStatus(tenantId);
       const unavailable = governance.requiredForDisposition && journal.status !== 'ready';
+      const attention = governance.requiredForDisposition && !journal.dispositionReady;
       return {
         ...base,
-        status: unavailable || base.status === 'unavailable' ? 'unavailable' : base.status,
+        status: unavailable || base.status === 'unavailable'
+          ? 'unavailable'
+          : attention ? 'attention' : base.status,
         timeAttestationGovernance: journal
       };
     } catch (error) {
