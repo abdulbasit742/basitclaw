@@ -24,10 +24,18 @@ await requireMarkers('src/evidence/evidencePreservationStore.js', 'Evidence pres
   'writeJsonExclusive',
   'timingSafeEqual',
   'signedReceipts: true',
+  'independentEncryptionKeys: true',
   'createOnly: true',
   'deletionApi: false',
   'backend-confirmed-write-once',
   'verifiedForVersion',
+  'archiveIdFor',
+  'receiptRefsForEvidence',
+  'orphanReceipts',
+  'duplicateReceipts',
+  'missing_preservation_encryption_keys',
+  'missing_preservation_signing_secrets',
+  'created && !committed',
   'EVIDENCE_PRESERVATION_REQUIRED'
 ]);
 await requireMarkers('src/evidence/evidencePreservationRegistry.js', 'Evidence preservation composition', [
@@ -35,6 +43,8 @@ await requireMarkers('src/evidence/evidencePreservationRegistry.js', 'Evidence p
   'missingVersions',
   'requiredForDisposition',
   'evidencePreservationStatus',
+  'indexReceipts',
+  'versionReady',
   'preservation.verifyTenant',
   'createEvidencePreservationRegistryFromEnvironment'
 ]);
@@ -61,12 +71,15 @@ await requireMarkers('docs/evidence-preservation.md', 'Evidence preservation run
   'retention extension',
   'PRESERVE EVD-',
   'does not make an ordinary filesystem WORM',
+  'fail-closed staging configuration',
+  'Rollback removes only a file created by the current invocation',
   'no deletion endpoint'
 ]);
 await requireMarkers('config/evidence-screening.production.env.example', 'Production preservation configuration', [
   'WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_MODE=shared-file',
   'WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_REQUIRED_FOR_DISPOSITION=true',
-  'WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_IMMUTABLE_BACKEND_CONFIRMED=true',
+  'WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_IMMUTABLE_BACKEND_CONFIRMED=false',
+  'Change to true only as an approved deployment override',
   'WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_SIGNING_SECRETS='
 ]);
 
