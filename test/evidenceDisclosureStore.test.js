@@ -192,7 +192,7 @@ test('acknowledgement removes sealed package bytes and records a terminal chain 
   const acknowledge = signed({ tenantId, claimToken: job.claimToken }, now(), 'recipient-ack-nonce-0002');
   const result = store.acknowledgeSigned(sealed.disclosureId, acknowledge.bytes, acknowledge.headers);
   assert.equal(result.state, 'acknowledged');
-  assert.equal(result.eventCount, 5);
+  assert.equal(result.eventCount, 6);
   const raw = allFiles(directory).map((path) => readFileSync(path, 'utf8')).join('\n');
   assert.equal(raw.includes(job.package.ciphertext), false);
   assert.equal(raw.includes(job.claimToken), false);
