@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { AuthenticationError, AuthorizationError } from '../security/accessControl.js';
 import { OidcUnavailableError } from '../security/oidcAuthenticator.js';
 import { RateLimitStoreError } from '../security/sharedRateLimiter.js';
+import { sha256 } from './evidenceCrypto.js';
 import {
   EvidenceConflictError,
   EvidenceIntegrityError,
@@ -85,7 +86,7 @@ export function createEvidenceVerificationBundleHandler({
             evidenceId,
             version: data.summary.evidenceVersion,
             profile: data.summary.profile,
-            recipientRef: data.summary.recipientRef
+            recipientDigest: sha256(data.summary.recipientRef)
           }
         });
         return sendJson(res, 201, { success: true, data, meta: meta(requestId, principal) }, requestId, {
