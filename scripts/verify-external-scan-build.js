@@ -6,7 +6,8 @@ await requireMarkers('src/evidence/externalScanAttestationRegistry.js','External
 await requireMarkers('src/evidence/externalScanEvidenceRegistry.js','External scan release gate',['external_verdict_not_clean','requireCleanForRelease','recordExternalScanAttestation','externalScanAttestations','externalScanStatus','external-scan-release-policy','.external-scan-policy-locks',"externalScan.mode === 'enforce'",'external-scanner-disabled']);
 await requireMarkers('src/evidence/externalScanCallbackHandler.js','External scan callback',['/api/workforce-audit/external-scanner/attestations','x-content-type-options','HMAC realm','external_scan.authentication_failed','EXTERNAL_SCAN_POLICY_BUSY','EXTERNAL_SCAN_POLICY_UNAVAILABLE']);
 await requireMarkers('src/evidence/externalScanManagementHandler.js','External scan management API',['/api/workforce-audit/external-scanner/status','/external-scans','governance:read','authFailure','external-scan-management']);
-await requireMarkers('src/evidenceRuntime.js','Composed evidence runtime',['createEvidenceAssuranceExportApprovalAwareApp']);
+await requireMarkers('src/evidenceRuntime.js','Composed evidence runtime',['createRegulatoryCaseAwareApp']);
+await requireMarkers('src/regulatory/regulatoryCaseServer.js','Regulatory runtime composition',['createEvidenceAssuranceExportApprovalAwareApp']);
 await requireMarkers('src/evidence/evidenceAssuranceExportApprovalServer.js','Approval runtime composition',['createEvidenceAssuranceBundleAwareApp']);
 await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js','Assurance runtime composition',['createEvidenceTimeAttestationGovernanceAwareApp']);
 await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceServer.js','Governed time-attestation runtime composition',['createEvidenceTimeAttestationAwareApp']);
