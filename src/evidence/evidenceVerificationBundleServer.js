@@ -1,19 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createAdaptiveRateLimiterFromEnvironment } from '../security/rateLimiter.js';
-import { createEvidenceTimeAttestationAwareApp } from './evidenceTimeAttestationServer.js';
+import { createEvidenceTimeAttestationGovernanceAwareApp } from './evidenceTimeAttestationGovernanceServer.js';
+import { createEvidenceTimeAttestationGovernanceRegistryFromEnvironment } from './evidenceTimeAttestationGovernanceRegistry.js';
 import {
   createEvidenceVerificationBundleServiceFromEnvironment
 } from './evidenceVerificationBundle.js';
 import { createEvidenceVerificationBundleHandler } from './evidenceVerificationBundleHandler.js';
-import { createEvidenceTimeAttestationRegistryFromEnvironment } from './evidenceTimeAttestationRegistry.js';
 
 export function createEvidenceVerificationBundleAwareApp({
   env = process.env,
-  evidenceRegistry = createEvidenceTimeAttestationRegistryFromEnvironment(env),
+  evidenceRegistry = createEvidenceTimeAttestationGovernanceRegistryFromEnvironment(env),
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
-  baseApp = createEvidenceTimeAttestationAwareApp({ env, evidenceRegistry, rateLimiter }),
-  verificationBundleService = createEvidenceVerificationBundleServiceFromEnvironment({ env, registry: evidenceRegistry }),
+  baseApp = createEvidenceTimeAttestationGovernanceAwareApp({ env, evidenceRegistry, rateLimiter }),
+  verificationRegistry = operationalProofRegistry(evidenceRegistry),
+  verificationBundleService = createEvidenceVerificationBundleServiceFromEnvironment({ env, registry: verificationRegistry }),
   securityTelemetry = baseApp.apiSecurity?.securityTelemetry,
   verificationBundleHandler = createEvidenceVerificationBundleHandler({
     service: verificationBundleService,
@@ -23,7 +24,7 @@ export function createEvidenceVerificationBundleAwareApp({
   })
 } = {}) {
   const baseHandler = baseApp.listeners('request')[0];
-  if (typeof baseHandler !== 'function') throw new TypeError('The time-attestation application must expose a request handler.');
+  if (typeof baseHandler !== 'function') throw new TypeError('The notary-governance application must expose a request handler.');
 
   const server = createServer(async (req, res) => {
     const requestId = randomUUID();
@@ -74,8 +75,33 @@ export function createEvidenceVerificationBundleAwareApp({
   server.externalScanJobDeliveryHandler = baseApp.externalScanJobDeliveryHandler;
   server.evidencePreservationHandler = baseApp.evidencePreservationHandler;
   server.evidenceTimeAttestationHandler = baseApp.evidenceTimeAttestationHandler;
+  server.evidenceTimeAttestationGovernanceHandler = baseApp.evidenceTimeAttestationGovernanceHandler;
   server.evidenceVerificationBundleHandler = verificationBundleHandler;
   server.evidenceVerificationBundleService = verificationBundleService;
   server.auditRegistry = baseApp.auditRegistry;
   return server;
+}
+
+function operationalProofRegistry(registry) {
+  return Object.freeze({
+    ...registry,
+    verifyEvidenceTimeAttestations(tenantId, archiveId) {
+      const result = registry.verifyEvidenceTimeAttestations(tenantId, archiveId);
+      return {
+        ...result,
+        quorumSatisfied: result.operationalQuorumSatisfied ?? result.quorumSatisfied,
+        distinctProviders: result.acceptableDistinctProviders ?? result.distinctProviders,
+        providerIds: result.acceptableProviderIds ?? result.providerIds,
+        governanceRequiredForDisposition: registry.evidenceTimeAttestationGovernanceStore?.requiredForDisposition ?? false
+      };
+    },
+    evidenceTimeAttestations(tenantId, archiveId, options = {}) {
+      const effective = registry.effectiveArchiveVerification?.(tenantId, archiveId);
+      if (effective?.attestationDecisions) {
+        const limit = Math.min(Math.max(Number(options.limit ?? 5000), 1), 5000);
+        return effective.attestationDecisions.slice(-limit);
+      }
+      return registry.evidenceTimeAttestations(tenantId, archiveId, options);
+    }
+  });
 }
