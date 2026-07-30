@@ -1,6 +1,6 @@
 import { sha256 } from './evidenceCrypto.js';
 import { EvidenceConflictError, EvidenceIntegrityError, EvidenceValidationError } from './evidenceRegistry.js';
-import { createEvidenceTimeAttestationRegistryFromEnvironment } from './evidenceTimeAttestationRegistry.js';
+import { createEvidenceTimeAttestationGovernanceRegistryFromEnvironment } from './evidenceTimeAttestationGovernanceRegistry.js';
 import {
   createEvidenceDisclosureStore,
   createEvidenceDisclosureStoreFromEnvironment
@@ -22,7 +22,7 @@ export function createEvidenceDisclosureRegistry({
   if (!registry || typeof registry.readContent !== 'function'
       || typeof registry.verifyEvidencePreservation !== 'function'
       || typeof registry.verifyEvidenceTimeAttestations !== 'function') {
-    throw new TypeError('A preservation and time-attestation aware evidence registry is required.');
+    throw new TypeError('A preservation and governed time-attestation aware evidence registry is required.');
   }
   if (!disclosures || typeof disclosures.create !== 'function') throw new TypeError('An evidence disclosure store is required.');
   if (typeof requireNotaryQuorum !== 'boolean') throw new TypeError('requireNotaryQuorum must be true or false.');
@@ -92,17 +92,18 @@ export function createEvidenceDisclosureRegistry({
     }
     const preservation = registry.verifyEvidencePreservation(tenantId, receipt.archiveId);
     const timeAttestation = registry.verifyEvidenceTimeAttestations(tenantId, receipt.archiveId);
-    if (requireNotaryQuorum && !timeAttestation.quorumSatisfied) {
-      throw new EvidenceDisclosureTrustError('The configured independent time-attestation quorum is required before disclosure.', {
+    const quorumSatisfied = timeAttestation.operationalQuorumSatisfied ?? timeAttestation.quorumSatisfied;
+    if (requireNotaryQuorum && !quorumSatisfied) {
+      throw new EvidenceDisclosureTrustError('The configured operational time-attestation quorum is required before disclosure.', {
         evidenceId: item.evidenceId,
         version: version.version,
         archiveId: receipt.archiveId,
         minimumProviders: timeAttestation.minimumProviders,
-        distinctProviders: timeAttestation.distinctProviders,
-        reason: 'missing_time_attestation_quorum'
+        distinctProviders: timeAttestation.acceptableDistinctProviders ?? timeAttestation.distinctProviders,
+        rejectedAttestations: timeAttestation.rejectedAttestations ?? 0,
+        reason: 'missing_operational_time_attestation_quorum'
       });
     }
-    const attestations = registry.evidenceTimeAttestations(tenantId, receipt.archiveId, { limit: 1000 });
     return {
       evidenceId: item.evidenceId,
       version: version.version,
@@ -123,7 +124,8 @@ export function createEvidenceDisclosureRegistry({
       },
       timeAttestations: {
         verification: timeAttestation,
-        records: attestations
+        records: timeAttestation.attestationDecisions
+          ?? registry.evidenceTimeAttestations(tenantId, receipt.archiveId, { limit: 1000 })
       }
     };
   }
@@ -181,7 +183,7 @@ export function createEvidenceDisclosureRegistry({
 }
 
 export function createEvidenceDisclosureRegistryFromEnvironment(env = process.env) {
-  const registry = createEvidenceTimeAttestationRegistryFromEnvironment(env);
+  const registry = createEvidenceTimeAttestationGovernanceRegistryFromEnvironment(env);
   const disclosures = createEvidenceDisclosureStoreFromEnvironment({ env, evidenceRegistry: registry });
   const requireNotaryQuorum = parseBoolean(envValue(env.WORKFORCE_AUDIT_EVIDENCE_DISCLOSURE_REQUIRE_NOTARY_QUORUM) ?? true);
   return createEvidenceDisclosureRegistry({ registry, disclosures, requireNotaryQuorum });
