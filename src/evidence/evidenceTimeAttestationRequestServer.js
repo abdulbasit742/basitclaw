@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createAdaptiveRateLimiterFromEnvironment } from '../security/rateLimiter.js';
-import { createEvidenceTimeAttestationGovernanceAwareApp } from './evidenceTimeAttestationGovernanceServer.js';
+import { createEvidenceAssuranceBundleAwareApp } from './evidenceAssuranceBundleServer.js';
 import { createEvidenceTimeAttestationRequestHandler } from './evidenceTimeAttestationRequestHandler.js';
 import { createEvidenceTimeAttestationRequestRegistryFromEnvironment } from './evidenceTimeAttestationRequestRegistry.js';
 
@@ -9,7 +9,7 @@ export function createEvidenceTimeAttestationRequestAwareApp({
   env = process.env,
   evidenceRegistry = createEvidenceTimeAttestationRequestRegistryFromEnvironment(env),
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
-  baseApp = createEvidenceTimeAttestationGovernanceAwareApp({ env, evidenceRegistry, rateLimiter }),
+  baseApp = createEvidenceAssuranceBundleAwareApp({ env, evidenceRegistry, rateLimiter }),
   securityTelemetry = baseApp.apiSecurity?.securityTelemetry,
   requestHandler = createEvidenceTimeAttestationRequestHandler({
     registry: evidenceRegistry,
@@ -28,7 +28,7 @@ export function createEvidenceTimeAttestationRequestAwareApp({
   }
   const baseHandler = baseApp.listeners('request')[0];
   if (typeof baseHandler !== 'function') {
-    throw new TypeError('The time-attestation governance application must expose a request handler.');
+    throw new TypeError('The assurance bundle application must expose a request handler.');
   }
 
   const server = createServer(async (req, res) => {
@@ -65,23 +65,14 @@ export function createEvidenceTimeAttestationRequestAwareApp({
 
   server.once('listening', () => baseApp.resilienceScheduler?.start?.());
   server.once('close', () => baseApp.resilienceScheduler?.stop?.());
-  server.resilienceScheduler = baseApp.resilienceScheduler;
-  server.apiSecurity = baseApp.apiSecurity;
-  server.authenticationGateway = baseApp.authenticationGateway;
-  server.identityEntitlements = baseApp.identityEntitlements;
-  server.privilegedAccess = baseApp.privilegedAccess;
-  server.scimHandler = baseApp.scimHandler;
+  for (const property of [
+    'resilienceScheduler', 'apiSecurity', 'authenticationGateway', 'identityEntitlements', 'privilegedAccess', 'scimHandler',
+    'evidenceHandler', 'evidenceReferenceMutex', 'externalScanCallbackHandler', 'externalScanManagementHandler',
+    'externalScanJobGovernanceHandler', 'externalScanJobDeliveryHandler', 'evidencePreservationHandler',
+    'evidenceTimeAttestationHandler', 'evidenceTimeAttestationGovernanceHandler', 'evidenceAssuranceBundleHandler',
+    'auditRegistry'
+  ]) server[property] = baseApp[property];
   server.evidenceRegistry = evidenceRegistry;
-  server.evidenceHandler = baseApp.evidenceHandler;
-  server.evidenceReferenceMutex = baseApp.evidenceReferenceMutex;
-  server.externalScanCallbackHandler = baseApp.externalScanCallbackHandler;
-  server.externalScanManagementHandler = baseApp.externalScanManagementHandler;
-  server.externalScanJobGovernanceHandler = baseApp.externalScanJobGovernanceHandler;
-  server.externalScanJobDeliveryHandler = baseApp.externalScanJobDeliveryHandler;
-  server.evidencePreservationHandler = baseApp.evidencePreservationHandler;
-  server.evidenceTimeAttestationHandler = baseApp.evidenceTimeAttestationHandler;
-  server.evidenceTimeAttestationGovernanceHandler = baseApp.evidenceTimeAttestationGovernanceHandler;
   server.evidenceTimeAttestationRequestHandler = requestHandler;
-  server.auditRegistry = baseApp.auditRegistry;
   return server;
 }
