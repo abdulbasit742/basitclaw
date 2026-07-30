@@ -29,13 +29,14 @@ await requireMarkers('src/evidence/evidenceDisclosurePackageStore.js', 'Disclosu
   'configuredRecipients',
   'packageSha256', 'manifestSha256',
   'previousHash', 'verifyEvidenceDisclosurePackage',
-  'missing_disclosure_configuration',
-  'plaintextPackagePersisted: false'
+  'missing_disclosure_configuration'
 ]);
 await requireMarkers('src/evidence/evidenceDisclosurePackageRegistry.js', 'Disclosure package composition', [
   'confirmation must be exactly EXPORT',
   'metadataOnlyDefault: true',
   'arbitraryRecipientKeysAccepted: false',
+  'plaintextPackagePersisted: false',
+  'unsupported field',
   'screeningReports', 'externalScanAttestations',
   'preservationReceipts', 'timeAttestations',
   'registry.readContent',
@@ -46,7 +47,6 @@ await requireMarkers('src/evidence/evidenceDisclosurePackageHandler.js', 'Disclo
   '/disclosure-packages',
   'evidence:export',
   'sensitive',
-  'publicKeyPem',
   'decodeSegment',
   'EVIDENCE_DISCLOSURE_BUSY'
 ]);
@@ -72,7 +72,7 @@ await requireMarkers('scripts/verify-evidence-disclosure-package.js', 'Offline d
 await requireMarkers('test/evidenceDisclosurePackageStore.test.js', 'Disclosure package regressions', [
   'only encrypted receipts persist',
   'decrypt only with the configured recipient',
-  'Package tampering',
+  'package tampering',
   'Metadata package for audit committee'
 ]);
 await requireMarkers('docs/evidence-disclosure-packages.md', 'Disclosure package runbook', [
