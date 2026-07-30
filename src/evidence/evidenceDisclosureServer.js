@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createAdaptiveRateLimiterFromEnvironment } from '../security/rateLimiter.js';
-import { createEvidenceTimeAttestationAwareApp } from './evidenceTimeAttestationServer.js';
+import { createEvidenceTimeAttestationGovernanceAwareApp } from './evidenceTimeAttestationGovernanceServer.js';
 import { createEvidenceDisclosureHandler } from './evidenceDisclosureHandler.js';
 import { createEvidenceDisclosureRegistryFromEnvironment } from './evidenceDisclosureRegistry.js';
 
@@ -9,7 +9,7 @@ export function createEvidenceDisclosureAwareApp({
   env = process.env,
   evidenceRegistry = createEvidenceDisclosureRegistryFromEnvironment(env),
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
-  baseApp = createEvidenceTimeAttestationAwareApp({ env, evidenceRegistry, rateLimiter }),
+  baseApp = createEvidenceTimeAttestationGovernanceAwareApp({ env, evidenceRegistry, rateLimiter }),
   securityTelemetry = baseApp.apiSecurity?.securityTelemetry,
   disclosureAuthenticationGateway = createDisclosureAuthenticationGateway(baseApp.authenticationGateway),
   disclosureHandler = createEvidenceDisclosureHandler({
@@ -20,11 +20,13 @@ export function createEvidenceDisclosureAwareApp({
   })
 } = {}) {
   if (evidenceRegistry.evidenceDisclosureEnabled
-      && (!evidenceRegistry.evidencePreservationEnabled || !evidenceRegistry.evidenceTimeAttestationEnabled)) {
-    throw new TypeError('Governed evidence disclosure requires enabled preservation and independent time attestations.');
+      && (!evidenceRegistry.evidencePreservationEnabled
+        || !evidenceRegistry.evidenceTimeAttestationEnabled
+        || !evidenceRegistry.evidenceTimeAttestationGovernanceEnabled)) {
+    throw new TypeError('Governed evidence disclosure requires enabled preservation, independent time attestations and notary governance.');
   }
   const baseHandler = baseApp.listeners('request')[0];
-  if (typeof baseHandler !== 'function') throw new TypeError('The time-attestation application must expose a request handler.');
+  if (typeof baseHandler !== 'function') throw new TypeError('The time-attestation governance application must expose a request handler.');
 
   const server = createServer(async (req, res) => {
     const requestId = randomUUID();
@@ -74,6 +76,7 @@ export function createEvidenceDisclosureAwareApp({
   server.externalScanJobDeliveryHandler = baseApp.externalScanJobDeliveryHandler;
   server.evidencePreservationHandler = baseApp.evidencePreservationHandler;
   server.evidenceTimeAttestationHandler = baseApp.evidenceTimeAttestationHandler;
+  server.evidenceTimeAttestationGovernanceHandler = baseApp.evidenceTimeAttestationGovernanceHandler;
   server.evidenceDisclosureHandler = disclosureHandler;
   server.auditRegistry = baseApp.auditRegistry;
   return server;
