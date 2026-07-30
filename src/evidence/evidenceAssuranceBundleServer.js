@@ -18,6 +18,9 @@ export function createEvidenceAssuranceBundleAwareApp({
     securityTelemetry
   })
 } = {}) {
+  if (evidenceRegistry.assuranceBundleEnabled && !evidenceRegistry.enabled) {
+    throw new TypeError('Evidence assurance bundles require enabled encrypted evidence custody.');
+  }
   const baseHandler = baseApp.listeners('request')[0];
   if (typeof baseHandler !== 'function') throw new TypeError('The time-attestation application must expose a request handler.');
   const server = createServer(async (req, res) => {
