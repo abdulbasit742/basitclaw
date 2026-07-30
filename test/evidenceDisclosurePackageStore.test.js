@@ -162,10 +162,11 @@ test('enabled environment configuration requires dedicated disclosure keys', () 
   }), (error) => error.details.reason === 'missing_disclosure_configuration');
 });
 
-test('registry defaults to current-version metadata and uses guarded content reads only when requested', () => {
+test('registry defaults to current-version metadata, uses guarded reads, and exports operationally acceptable notary decisions', () => {
   const { store } = fixture();
   const content = Buffer.from('version two');
   let reads = 0;
+  const archiveId = `ARC-${'d'.repeat(32)}`;
   const item = {
     evidenceId,
     filename: 'evidence.txt', mediaType: 'text/plain', description: 'Evidence',
@@ -186,11 +187,34 @@ test('registry defaults to current-version metadata and uses guarded content rea
       assert.equal(version, 2);
       return { evidenceId, version, filename: 'evidence.txt', mediaType: 'text/plain', sha256: sha256(content), sizeBytes: content.length, content };
     },
-    verify() { return { valid: true, headSequence: 2, headHash: 'c'.repeat(64) }; },
+    verify() { return { valid: true, headSequence: 2, headHash: 'c'.repeat(64), timeAttestationGovernance: { valid: true } }; },
     screeningReport(_tenant, _evidence, { version }) { return { version, contentSha256: item.versions[version - 1].sha256, accessDecision: 'allow' }; },
     externalScanAttestations() { return []; },
-    evidencePreservationReceipts() { return []; },
-    evidenceTimeAttestations() { return []; },
+    evidencePreservationReceipts() {
+      return [{ archiveId, evidenceId, evidenceVersion: 2, contentSha256: sha256(content), retentionUntil: item.retentionUntil }];
+    },
+    effectiveArchiveVerification() {
+      return {
+        valid: true,
+        cryptographicallyValid: true,
+        governanceEnabled: true,
+        operationallyAcceptable: false,
+        operationalQuorumSatisfied: false,
+        minimumProviders: 1,
+        acceptableDistinctProviders: 0,
+        rejectedAttestations: 1,
+        attestationDecisions: [{
+          attestationId: `TSA-${'e'.repeat(32)}`,
+          providerId: 'revoked-authority',
+          governance: {
+            cryptographicallyValid: true,
+            operationallyAcceptable: false,
+            status: 'revoked',
+            reasons: [{ eventType: 'provider_revoked', reasonCode: 'authority_compromise' }]
+          }
+        }]
+      };
+    },
     health() { return { status: 'ready' }; },
     tenantStatus() { return { status: 'ready' }; }
   };
@@ -201,6 +225,10 @@ test('registry defaults to current-version metadata and uses guarded content rea
   }, { actor: 'manager.one' });
   assert.deepEqual(metadata.receipt.evidenceVersions, [2]);
   assert.equal(reads, 0);
+  const effective = metadata.package.manifest.trust.timeAttestationGovernance[0].effectiveVerification;
+  assert.equal(effective.cryptographicallyValid, true);
+  assert.equal(effective.operationalQuorumSatisfied, false);
+  assert.equal(effective.attestationDecisions[0].governance.status, 'revoked');
   registry.generateEvidenceDisclosurePackage(tenantId, evidenceId, {
     purpose: 'Sealed package for external regulator',
     confirmation: `EXPORT ${evidenceId}`,
