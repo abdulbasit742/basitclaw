@@ -11,6 +11,7 @@ The application provides:
 - tenant-hashed directories and deterministic archive IDs;
 - create-only file writes using exclusive filesystem creation;
 - AES-256-GCM authenticated encryption for objects and receipts;
+- encryption keys dedicated to preservation rather than reused from live custody;
 - independent HMAC-SHA-256 receipt signing;
 - immutable evidence identity, version, SHA-256, size and retention-date binding;
 - exact receipt-to-object envelope verification;
@@ -18,9 +19,13 @@ The application provides:
 - recovery when an object was committed but its receipt was interrupted;
 - no deletion endpoint and no archive-content retrieval endpoint.
 
-This control does not make an ordinary filesystem WORM. Production infrastructure must mount a backend that independently prevents overwrite and deletion for the required retention period. Examples include an approved object-lock gateway, compliance-mode immutable volume or regulated archive appliance. Set `WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_IMMUTABLE_BACKEND_CONFIRMED=true` only after infrastructure owners verify that property.
+This control does not make an ordinary filesystem WORM. Production infrastructure must mount a backend that independently prevents overwrite and deletion for the required retention period. Examples include an approved object-lock gateway, compliance-mode immutable volume or regulated archive appliance.
+
+Keep `WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_IMMUTABLE_BACKEND_CONFIRMED=false` during configuration and validation. Change it to `true` only as an approved deployment override after infrastructure owners independently verify and record the backend immutability and retention-lock policy.
 
 ## Production configuration
+
+Fail-closed staging configuration:
 
 ```bash
 WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_MODE=shared-file
@@ -30,10 +35,16 @@ WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_KEYS='{"2026-q3":"<base64-32-byte-archive-
 WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_PRIMARY_KEY_ID=2026-q3
 WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_SIGNING_SECRETS='{"2026-q3":"<base64-32-to-128-byte-signing-secret>"}'
 WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_PRIMARY_SIGNING_KEY_ID=2026-q3
+WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_IMMUTABLE_BACKEND_CONFIRMED=false
+```
+
+Only after independent infrastructure verification:
+
+```bash
 WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_IMMUTABLE_BACKEND_CONFIRMED=true
 ```
 
-Use archive encryption keys and receipt-signing secrets that are separate from the live evidence-custody keys. Keep historical keys available until every retained archive using them has passed its retention and governance requirements.
+Preservation encryption keys and receipt-signing secrets are mandatory and must be separate from the live evidence-custody keys. Keep historical keys available until every retained archive using them has passed its retention and governance requirements.
 
 ## Governance routes
 
@@ -70,7 +81,9 @@ The archive ID binds:
 
 Repeating the same preservation request is idempotent and returns the original receipt. It cannot change the original actor, purpose, timestamp or cryptographic object.
 
-A retention extension creates a different archive ID. This is deliberate: an existing write-once receipt is never edited or shortened. Before disposition, the policy accepts only a verified receipt whose retention date is at least the evidence item's current retention date.
+A retention extension creates a different archive ID. This is deliberate: an existing write-once receipt is never edited or shortened. Before disposition, the policy resolves the deterministic archive ID directly and accepts only its fully verified receipt for the evidence item's current retention date.
+
+Receipts are indexed under tenant- and evidence-hashed directories. Evidence-scoped reads apply their limit before decrypting receipts, while disposition performs direct archive lookup rather than scanning tenant history.
 
 ## Legal holds
 
@@ -84,7 +97,7 @@ When `WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_REQUIRED_FOR_DISPOSITION=true`, disp
 
 - matches the evidence ID and version;
 - matches the original content SHA-256 and size;
-- authenticates successfully with the retained encryption key;
+- authenticates successfully with a retained dedicated preservation key;
 - has a valid receipt signature;
 - points to the matching encrypted object envelope;
 - covers the current retention date.
@@ -100,7 +113,9 @@ The object is committed first using exclusive create semantics. If the process s
 3. recreates only the missing signed receipt;
 4. preserves the original archive timestamp, actor and purpose.
 
-A receipt without its object, conflicting create-only file, invalid signature, missing key or checksum mismatch fails closed.
+Rollback removes only a file created by the current invocation before it was committed. A pre-existing write-once record is never deleted after an open, permission, descriptor or directory-fsync failure.
+
+A receipt without its object, conflicting create-only file, duplicate receipt, invalid signature, missing key or checksum mismatch fails closed.
 
 ## Key rotation
 
@@ -118,7 +133,7 @@ Monitor:
 
 - preservation store health and backend confirmation;
 - unpreserved versions when disposition gating is enabled;
-- orphan objects or receipts;
+- orphan objects, orphan receipts or duplicate receipts;
 - verification failures;
 - archive key and signing-key age;
 - immutable mount capacity and availability;
