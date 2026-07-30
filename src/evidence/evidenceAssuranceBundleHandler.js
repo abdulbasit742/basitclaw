@@ -17,8 +17,10 @@ import {
 
 const STATUS_ROUTE = '/api/workforce-audit/assurance-bundles/status';
 const GOVERNANCE_ROUTE = /^\/api\/workforce-audit\/evidence\/([^/]+)\/assurance-bundles$/;
+const ACCEPTANCE_VERIFY_ROUTE = /^\/api\/workforce-audit\/assurance-bundles\/([^/]+)\/acceptance\/verify$/;
 const CLAIM_ROUTE = '/api/workforce-audit/assurance-recipient/bundles/claim';
 const ACK_ROUTE = /^\/api\/workforce-audit\/assurance-recipient\/bundles\/([^/]+)\/acknowledge$/;
+const ACCEPT_ROUTE = /^\/api\/workforce-audit\/assurance-recipient\/bundles\/([^/]+)\/acceptance$/;
 
 export function createEvidenceAssuranceBundleHandler({
   registry,
@@ -30,12 +32,13 @@ export function createEvidenceAssuranceBundleHandler({
   if (!authenticationGateway || typeof authenticationGateway.authenticate !== 'function') throw new TypeError('An authentication gateway is required.');
 
   function matches(pathname) {
-    return pathname === STATUS_ROUTE || pathname === CLAIM_ROUTE || GOVERNANCE_ROUTE.test(pathname) || ACK_ROUTE.test(pathname);
+    return pathname === STATUS_ROUTE || pathname === CLAIM_ROUTE || GOVERNANCE_ROUTE.test(pathname)
+      || ACK_ROUTE.test(pathname) || ACCEPT_ROUTE.test(pathname) || ACCEPTANCE_VERIFY_ROUTE.test(pathname);
   }
 
   async function handle(req, res, requestId = randomUUID()) {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    const recipientBoundary = url.pathname === CLAIM_ROUTE || ACK_ROUTE.test(url.pathname);
+    const recipientBoundary = url.pathname === CLAIM_ROUTE || ACK_ROUTE.test(url.pathname) || ACCEPT_ROUTE.test(url.pathname);
     try {
       if (recipientBoundary) return await handleRecipient(req, res, url, requestId);
       return await handleGovernance(req, res, url, requestId);
@@ -74,19 +77,27 @@ export function createEvidenceAssuranceBundleHandler({
       if (failed && !failed.allowed) return rateLimited(res, requestId, failed);
       return sendJson(res, 401, { success: false, error: error.message, code: error.code, meta: { requestId } }, requestId, { 'www-authenticate': challenge(authenticationGateway.mode) });
     }
-    const permission = req.method === 'POST' ? 'evidence:export' : 'governance:read';
+    const isCreation = req.method === 'POST' && GOVERNANCE_ROUTE.test(url.pathname);
+    const permission = isCreation ? 'evidence:export' : 'governance:read';
     try { authenticationGateway.authorise(principal, permission); }
     catch (error) {
       if (!(error instanceof AuthorizationError)) throw error;
       record(securityTelemetry, { type: 'authorization.denied', severity: 'high', outcome: 'denied', requestId, subject: principal.subject, tenantId: principal.tenantId, method: req.method, route: url.pathname, details: { reason: error.details?.reason, boundary: 'assurance-bundles' } });
       return sendJson(res, 403, { success: false, error: error.message, code: error.code, meta: meta(requestId, principal) }, requestId);
     }
-    const policy = req.method === 'POST' ? 'privileged' : 'read';
+    const policy = isCreation ? 'privileged' : req.method === 'POST' ? 'sensitive' : 'read';
     const decision = rateLimiter?.consume?.(`credential:${principal.keyId ?? principal.subject}:assurance-bundles`, policy);
     if (decision) { applyRateHeaders(res, rateLimiter, decision); if (!decision.allowed) return rateLimited(res, requestId, decision); }
 
     if (url.pathname === STATUS_ROUTE && req.method === 'GET') {
       return sendJson(res, 200, { success: true, data: registry.assuranceBundleStatus(principal.tenantId), meta: meta(requestId, principal) }, requestId);
+    }
+    const acceptanceMatch = url.pathname.match(ACCEPTANCE_VERIFY_ROUTE);
+    if (acceptanceMatch && req.method === 'POST') {
+      const bundleId = decodeSegment(acceptanceMatch[1], 'bundleId');
+      const data = registry.verifyAssuranceAcceptanceReceipt(principal.tenantId, bundleId);
+      record(securityTelemetry, { type: 'assurance_bundle.acceptance_receipt_verified', severity: 'info', outcome: 'success', requestId, subject: principal.subject, tenantId: principal.tenantId, method: req.method, route: url.pathname, details: { bundleId, acceptanceId: data.acceptanceReceipt.acceptanceId } });
+      return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId);
     }
     const match = url.pathname.match(GOVERNANCE_ROUTE);
     if (!match) return notFound(res, requestId);
@@ -113,15 +124,27 @@ export function createEvidenceAssuranceBundleHandler({
     let data;
     if (url.pathname === CLAIM_ROUTE) data = registry.claimAssuranceBundles(body, req.headers);
     else {
-      const match = url.pathname.match(ACK_ROUTE);
-      if (!match) return notFound(res, requestId);
-      data = registry.acknowledgeAssuranceBundle(decodeSegment(match[1], 'bundleId'), body, req.headers);
+      const acceptance = url.pathname.match(ACCEPT_ROUTE);
+      const acknowledgement = url.pathname.match(ACK_ROUTE);
+      if (acceptance) data = registry.acceptAssuranceBundle(decodeSegment(acceptance[1], 'bundleId'), body, req.headers);
+      else if (acknowledgement) data = registry.acknowledgeAssuranceBundle(decodeSegment(acknowledgement[1], 'bundleId'), body, req.headers);
+      else return notFound(res, requestId);
     }
-    record(securityTelemetry, { type: url.pathname === CLAIM_ROUTE ? 'assurance_bundle.claimed' : 'assurance_bundle.delivered', severity: 'info', outcome: 'success', requestId, method: req.method, route: url.pathname, details: url.pathname === CLAIM_ROUTE ? { recipientId: data.recipientId, claimed: data.jobs.length } : { bundleId: data.bundleId, recipientId: data.recipientId } });
+    const eventType = url.pathname === CLAIM_ROUTE
+      ? 'assurance_bundle.claimed'
+      : ACCEPT_ROUTE.test(url.pathname) ? 'assurance_bundle.acceptance_verified' : 'assurance_bundle.delivered';
+    record(securityTelemetry, {
+      type: eventType,
+      severity: eventType === 'assurance_bundle.acceptance_verified' ? 'high' : 'info',
+      outcome: 'success', requestId, method: req.method, route: url.pathname,
+      details: url.pathname === CLAIM_ROUTE
+        ? { recipientId: data.recipientId, claimed: data.jobs.length }
+        : { bundleId: data.bundle?.bundleId ?? data.bundleId, recipientId: data.bundle?.recipientId ?? data.recipientId, acceptanceId: data.acceptanceReceipt?.acceptanceId ?? null }
+    });
     return sendJson(res, 200, { success: true, data, meta: { requestId } }, requestId);
   }
 
-  return Object.freeze({ matches, handle, statusRoute: STATUS_ROUTE, claimRoute: CLAIM_ROUTE });
+  return Object.freeze({ matches, handle, statusRoute: STATUS_ROUTE, claimRoute: CLAIM_ROUTE, acceptanceRoute: ACCEPT_ROUTE });
 }
 
 async function readJson(req, maximumBytes, allowed) { const bytes = await readBody(req, maximumBytes); let input; try { input = JSON.parse(bytes.toString('utf8') || '{}'); } catch { throw new EvidenceValidationError('The assurance bundle request must contain valid JSON.', { field: 'body' }); } if (!input || typeof input !== 'object' || Array.isArray(input)) throw new EvidenceValidationError('The assurance bundle request body must be an object.', { field: 'body' }); for (const key of Object.keys(input)) if (!allowed.has(key)) throw new EvidenceValidationError(`Unsupported assurance bundle field ${key}.`, { field: key }); return input; }
