@@ -27,7 +27,7 @@ function fixture() {
     encryptionPrimaryKeyId: 'r1',
     dueSoonHours: 72,
     resolveEvidence(_tenant, selection) {
-      if (!validEvidence) return { evidenceId: selection.evidenceId, version: selection.version, contentSha256: 'f'.repeat(64), sizeBytes: content.length, filename: 'response.txt', mediaType: 'text/plain' };
+      if (!validEvidence) return { evidenceId: `EVD-${'f'.repeat(32)}`, version: selection.version, contentSha256: 'f'.repeat(64), sizeBytes: content.length, filename: 'response.txt', mediaType: 'text/plain' };
       return { evidenceId, version: 1, contentSha256: digest, sizeBytes: content.length, filename: 'response.txt', mediaType: 'text/plain' };
     },
     now: () => new Date(current)
