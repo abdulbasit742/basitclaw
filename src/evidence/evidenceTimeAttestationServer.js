@@ -18,6 +18,9 @@ export function createEvidenceTimeAttestationAwareApp({
     securityTelemetry
   })
 } = {}) {
+  if (evidenceRegistry.evidenceTimeAttestationEnabled && !evidenceRegistry.evidencePreservationEnabled) {
+    throw new TypeError('Evidence time attestations require enabled immutable evidence preservation.');
+  }
   const baseHandler = baseApp.listeners('request')[0];
   if (typeof baseHandler !== 'function') throw new TypeError('The preservation application must expose a request handler.');
 
@@ -25,34 +28,17 @@ export function createEvidenceTimeAttestationAwareApp({
     const requestId = randomUUID();
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
-      if (timeAttestationHandler.matches(url.pathname)) {
-        return await timeAttestationHandler.handle(req, res, requestId);
-      }
+      if (timeAttestationHandler.matches(url.pathname)) return await timeAttestationHandler.handle(req, res, requestId);
       return await baseHandler(req, res);
     } catch (error) {
-      console.error('Unhandled evidence time-attestation server error', {
-        requestId,
-        code: error?.code,
-        error: error?.message
-      });
+      console.error('Unhandled evidence time-attestation server error', { requestId, code: error?.code, error: error?.message });
       if (!res.headersSent) {
-        res.writeHead(500, {
-          'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'no-store',
-          'x-content-type-options': 'nosniff',
-          'x-request-id': requestId
-        });
-        return res.end(JSON.stringify({
-          success: false,
-          error: 'Internal server error.',
-          code: 'INTERNAL_ERROR',
-          meta: { requestId }
-        }));
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-request-id': requestId });
+        return res.end(JSON.stringify({ success: false, error: 'Internal server error.', code: 'INTERNAL_ERROR', meta: { requestId } }));
       }
       res.destroy(error);
     }
   });
-
   server.once('listening', () => baseApp.resilienceScheduler?.start?.());
   server.once('close', () => baseApp.resilienceScheduler?.stop?.());
   server.resilienceScheduler = baseApp.resilienceScheduler;
