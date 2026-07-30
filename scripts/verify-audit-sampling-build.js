@@ -22,7 +22,7 @@ async function requireMarkers(path, label, markers) {
 
 await requireMarkers('src/sampling/auditSamplingEngine.js', 'Sampling engine', [
   'simple_random', 'systematic', 'monetary_unit', 'stratified_random',
-  'sampleWithoutReplacement', 'rejection', 'amountMinorUnits', 'populationRoot', 'selectionHash'
+  'sampleWithoutReplacement', 'value >= limit', 'amountMinorUnits', 'populationRoot', 'selectionHash'
 ]);
 await requireMarkers('src/sampling/auditSamplingStore.js', 'Sampling store', [
   'basitclaw-audit-sampling-plan-v1', 'encryptEvidenceJson', 'seedCommitment',
