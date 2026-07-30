@@ -60,7 +60,10 @@ await requireMarkers('src/evidence/externalScanManagementHandler.js', 'External 
   'authFailure',
   'external-scan-management'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'External scan runtime', [
+await requireMarkers('src/evidenceRuntime.js', 'Composed evidence runtime', [
+  'createEvidencePreservationAwareApp'
+]);
+await requireMarkers('src/evidence/evidencePreservationServer.js', 'Preservation runtime composition', [
   'createExternalScanAwareApp'
 ]);
 await requireMarkers('docs/external-scanner-attestations.md', 'External scan runbook', [
