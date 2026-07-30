@@ -20,50 +20,31 @@ async function requireMarkers(path, label, markers) {
 }
 
 await requireMarkers('src/evidence/evidenceTimeAttestationStore.js', 'Time-attestation store', [
-  'ed25519',
-  'rsa-pss-sha256',
-  'RSA_PKCS1_PSS_PADDING',
-  'basitclaw-evidence-time-attestation-v1',
-  'nonce_replay',
-  'timestamp_before_archive',
-  'timestamp_delay_exceeded',
-  'minimumProviders',
-  'distinctProviders',
-  'quorumSatisfied',
-  'encryptEvidenceJson',
-  'previousHash',
-  'EVIDENCE_TIME_ATTESTATION_REQUIRED'
+  'ed25519', 'rsa-pss-sha256', 'RSA_PKCS1_PSS_PADDING',
+  'basitclaw-evidence-time-attestation-v1', 'nonce_replay',
+  'timestamp_before_archive', 'timestamp_delay_exceeded',
+  'minimumProviders', 'distinctProviders', 'quorumSatisfied',
+  'encryptEvidenceJson', 'previousHash', 'EVIDENCE_TIME_ATTESTATION_REQUIRED'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationRegistry.js', 'Time-attestation composition', [
-  'receiptSha256',
-  'objectEnvelopeSha256',
-  'missingQuorum',
-  'quorumForArchive',
-  'requiredForDisposition',
+  'receiptSha256', 'objectEnvelopeSha256', 'missingQuorum',
+  'quorumForArchive', 'requiredForDisposition',
   'createEvidenceTimeAttestationRegistryFromEnvironment'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationHandler.js', 'Time-attestation API', [
   '/api/workforce-audit/evidence-notary/attestations',
-  '/notary-challenge',
-  '/time-attestations/verify',
-  'Signature realm',
-  'authFailure',
-  'EVIDENCE_TIME_ATTESTATION_BUSY'
+  '/notary-challenge', 'ATTESTATIONS_ROUTE', 'VERIFY_ROUTE',
+  'Signature realm', 'authFailure', 'EVIDENCE_TIME_ATTESTATION_BUSY'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-attestation server', [
-  'createEvidencePreservationAwareApp',
-  'evidenceTimeAttestationHandler',
-  'resilienceScheduler'
+  'createEvidencePreservationAwareApp', 'evidenceTimeAttestationHandler', 'resilienceScheduler'
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'Time-attestation runtime', [
   'createEvidenceTimeAttestationAwareApp'
 ]);
 await requireMarkers('docs/evidence-time-attestations.md', 'Time-attestation runbook', [
-  'RFC 3161',
-  'court-certified',
-  'basitclaw-evidence-time-attestation-v1',
-  'distinct authority providers',
-  'EVIDENCE_TIME_ATTESTATION_REQUIRED',
+  'RFC 3161', 'court-certified', 'basitclaw-evidence-time-attestation-v1',
+  'distinct authority providers', 'EVIDENCE_TIME_ATTESTATION_REQUIRED',
   'does not replace legal review'
 ]);
 await requireMarkers('config/evidence-screening.production.env.example', 'Production notary configuration', [
