@@ -43,8 +43,11 @@ await requireMarkers('src/evidence/evidenceTimeAttestationHandler.js', 'Time-att
 await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-attestation server', [
   'createEvidencePreservationAwareApp', 'evidenceTimeAttestationHandler', 'resilienceScheduler'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Time-attestation runtime', [
-  'createEvidenceTimeAttestationAwareApp'
+await requireMarkers('src/evidenceRuntime.js', 'Composed time-attestation runtime', [
+  'createEvidenceTimeAttestationGovernanceAwareApp'
+]);
+await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceServer.js', 'Time-attestation outer composition', [
+  'createEvidenceTimeAttestationAwareApp', 'evidenceTimeAttestationHandler'
 ]);
 await requireMarkers('test/evidenceTimeAttestationStore.test.js', 'Time-attestation safeguards', [
   'before resolving tenant or archive state',
