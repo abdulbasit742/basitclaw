@@ -20,15 +20,19 @@ async function requireMarkers(path, label, markers) {
 }
 
 await requireMarkers('src/evidence/evidenceTimeAttestationStore.js', 'Time-attestation store', [
-  'ed25519', 'rsa-pss-sha256', 'RSA_PKCS1_PSS_PADDING',
+  'ed25519', 'rsa-pss-sha256', 'RSA_PKCS1_PSS_PADDING', 'RSA_PSS_SALTLEN_AUTO',
   'basitclaw-evidence-time-attestation-v1', 'nonce_replay',
   'timestamp_before_archive', 'timestamp_delay_exceeded',
   'minimumProviders', 'distinctProviders', 'quorumSatisfied',
-  'encryptEvidenceJson', 'previousHash', 'EVIDENCE_TIME_ATTESTATION_REQUIRED'
+  'authenticate', 'Resolve tenant/archive state only after the authority has authenticated',
+  'verifyArchivesWithIndex', 'quorumForArchives', 'batchedVerification: true',
+  'encryptEvidenceJson', 'previousHash', 'invalid_notary_configuration',
+  'EVIDENCE_TIME_ATTESTATION_REQUIRED'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationRegistry.js', 'Time-attestation composition', [
-  'receiptSha256', 'objectEnvelopeSha256', 'missingQuorum',
-  'quorumForArchive', 'requiredForDisposition',
+  'basitclaw-preservation-receipt-challenge-v1',
+  'preservationReceiptChallengeDigest', 'objectEnvelopeSha256', 'missingQuorum',
+  'quorumForArchives', 'requiredForDisposition',
   'createEvidenceTimeAttestationRegistryFromEnvironment'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationHandler.js', 'Time-attestation API', [
@@ -41,6 +45,13 @@ await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-atte
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'Time-attestation runtime', [
   'createEvidenceTimeAttestationAwareApp'
+]);
+await requireMarkers('test/evidenceTimeAttestationStore.test.js', 'Time-attestation safeguards', [
+  'before resolving tenant or archive state',
+  'authority-selected salt lengths',
+  'future schema fields',
+  'batches quorum evaluation once',
+  'typed store error'
 ]);
 await requireMarkers('docs/evidence-time-attestations.md', 'Time-attestation runbook', [
   'RFC 3161', 'court-certified', 'basitclaw-evidence-time-attestation-v1',
