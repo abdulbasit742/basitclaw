@@ -32,6 +32,7 @@ await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceRegistry.js'
   'REVOKE ATTESTATION', 'SUPERSEDE ATTESTATION', 'REVOKE NOTARY PROVIDER', 'REVOKE NOTARY KEY',
   'currentOperationalPosture', 'operationalQuorumSatisfied', 'missingPreservations',
   'missingOperationalQuorum', 'EvidenceTimeAttestationGovernanceRequiredError',
+  'effectiveArchiveVerification',
   'createEvidenceTimeAttestationGovernanceRegistryFromEnvironment'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceHandler.js', 'Notary governance API', [
@@ -49,7 +50,11 @@ await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceServer.js', 
   'resilienceScheduler'
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'Outermost evidence runtime', [
-  'createEvidenceTimeAttestationGovernanceAwareApp'
+  'createEvidenceDisclosurePackageAwareApp'
+]);
+await requireMarkers('src/evidence/evidenceDisclosurePackageServer.js', 'Disclosure delegation to notary governance', [
+  'createEvidenceTimeAttestationGovernanceAwareApp',
+  'evidenceTimeAttestationGovernanceHandler'
 ]);
 await requireMarkers('test/evidenceTimeAttestationGovernance.test.js', 'Notary governance regressions', [
   'prospective provider revocation preserves earlier proof',
