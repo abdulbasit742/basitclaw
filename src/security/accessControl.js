@@ -4,12 +4,12 @@ const ROLE_PERMISSIONS = Object.freeze({
   audit_viewer: ['audit:read'],
   auditor: ['audit:read', 'fieldwork:write', 'finding:write'],
   audit_manager: [
-    'audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read', 'evidence:scan', 'evidence:preserve',
+    'audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read', 'evidence:scan', 'evidence:preserve', 'evidence:disclose',
     'backup:read', 'backup:write', 'replica:read', 'replica:write', 'resilience:read', 'drill:run',
     'coordination:read', 'privileged:request', 'privileged:read'
   ],
   compliance_admin: [
-    'audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read', 'evidence:scan', 'evidence:preserve',
+    'audit:read', 'engagement:write', 'fieldwork:write', 'finding:write', 'governance:read', 'evidence:scan', 'evidence:preserve', 'evidence:disclose',
     'backup:read', 'backup:write', 'backup:restore', 'replica:read', 'replica:write',
     'resilience:read', 'resilience:run', 'drill:run', 'coordination:read', 'security:read',
     'privileged:request', 'privileged:read', 'privileged:approve', 'privileged:revoke',
@@ -51,42 +51,26 @@ export function createAccessController({
     if (!suppliedKey) throw new AuthenticationError();
     const record = resolveCredential(records, suppliedKey);
     if (!record) {
-      throw new AuthenticationError(undefined, {
-        details: { reason: 'invalid_key', keyId: credentialHint(suppliedKey) }
-      });
+      throw new AuthenticationError(undefined, { details: { reason: 'invalid_key', keyId: credentialHint(suppliedKey) } });
     }
 
     const current = now();
     if (record.status === 'revoked') {
-      throw new AuthenticationError('The API credential has been revoked.', {
-        code: 'CREDENTIAL_REVOKED',
-        details: { reason: 'revoked', keyId: record.keyId }
-      });
+      throw new AuthenticationError('The API credential has been revoked.', { code: 'CREDENTIAL_REVOKED', details: { reason: 'revoked', keyId: record.keyId } });
     }
     if (record.notBefore && current < record.notBefore) {
-      throw new AuthenticationError('The API credential is not active yet.', {
-        code: 'CREDENTIAL_NOT_ACTIVE',
-        details: { reason: 'not_before', keyId: record.keyId, notBefore: record.notBefore.toISOString() }
-      });
+      throw new AuthenticationError('The API credential is not active yet.', { code: 'CREDENTIAL_NOT_ACTIVE', details: { reason: 'not_before', keyId: record.keyId, notBefore: record.notBefore.toISOString() } });
     }
     if (record.expiresAt && current >= record.expiresAt) {
-      throw new AuthenticationError('The API credential has expired.', {
-        code: 'CREDENTIAL_EXPIRED',
-        details: { reason: 'expired', keyId: record.keyId, expiresAt: record.expiresAt.toISOString() }
-      });
+      throw new AuthenticationError('The API credential has expired.', { code: 'CREDENTIAL_EXPIRED', details: { reason: 'expired', keyId: record.keyId, expiresAt: record.expiresAt.toISOString() } });
     }
 
     const requestedTenant = headerValue(req.headers['x-tenant-id']);
     if (requestedTenant && requestedTenant !== record.tenantId) {
-      throw new AuthorizationError('Tenant selection is controlled by the authenticated principal.', {
-        reason: 'tenant_override',
-        keyId: record.keyId,
-        requestedTenant
-      });
+      throw new AuthorizationError('Tenant selection is controlled by the authenticated principal.', { reason: 'tenant_override', keyId: record.keyId, requestedTenant });
     }
 
-    const expiresWithinWarning = record.expiresAt
-      && record.expiresAt.getTime() - current.getTime() <= rotationWarningDays * DAY_MS;
+    const expiresWithinWarning = record.expiresAt && record.expiresAt.getTime() - current.getTime() <= rotationWarningDays * DAY_MS;
     return Object.freeze({
       subject: record.subject,
       tenantId: record.tenantId,
@@ -101,11 +85,7 @@ export function createAccessController({
 
   function authorise(principal, permission) {
     if (!principal?.permissions?.includes(permission)) {
-      throw new AuthorizationError(undefined, {
-        reason: 'permission_denied',
-        keyId: principal?.keyId ?? null,
-        permission
-      });
+      throw new AuthorizationError(undefined, { reason: 'permission_denied', keyId: principal?.keyId ?? null, permission });
     }
     return principal;
   }
@@ -198,8 +178,7 @@ function normalisePrincipals(principals, { allowLegacyPlaintext }) {
       const apiKey = String(principal.apiKey);
       if (apiKey.length < 16) throw new TypeError(`Principal ${subject} has an API key shorter than 16 characters.`);
       record = {
-        mode: 'legacy',
-        apiKey,
+        mode: 'legacy', apiKey,
         keyId: principal.keyId ? cleanIdentifier(principal.keyId, 'keyId') : credentialHint(apiKey),
         subject, tenantId, role, status, notBefore, expiresAt
       };
@@ -234,35 +213,25 @@ function verifyScrypt(record, secret) {
     const expected = Buffer.from(record.secretHash, 'base64');
     const actual = scryptSync(secret, record.salt, expected.length);
     return expected.length === actual.length && timingSafeEqual(expected, actual);
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
-
 function optionalDate(value, field) {
   if (value === undefined || value === null || value === '') return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) throw new TypeError(`${field} must be a valid date.`);
   return date;
 }
-
 function normaliseInteger(value, field, minimum, maximum) {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new TypeError(`${field} must be an integer from ${minimum} to ${maximum}.`);
   return parsed;
 }
-
 function cleanIdentifier(value, field) {
   const identifier = String(value ?? '').trim();
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,127}$/.test(identifier)) throw new TypeError(`${field} must be a safe identifier.`);
   return identifier;
 }
-
-function headerValue(value) {
-  if (Array.isArray(value)) return value[0]?.trim();
-  return typeof value === 'string' ? value.trim() : '';
-}
-
+function headerValue(value) { if (Array.isArray(value)) return value[0]?.trim(); return typeof value === 'string' ? value.trim() : ''; }
 function safeEqual(left, right) {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
