@@ -40,7 +40,10 @@ await requireMarkers('src/evidence/evidenceHandler.js', 'Screening API', [
   'rejectQuarantine',
   'evidence.quarantine_released'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Screened runtime', [
+await requireMarkers('src/evidenceRuntime.js', 'Composed evidence runtime', [
+  'createEvidencePreservationAwareApp'
+]);
+await requireMarkers('src/evidence/evidencePreservationServer.js', 'Preservation runtime composition', [
   'createExternalScanAwareApp'
 ]);
 await requireMarkers('src/evidence/externalScanEvidenceRegistry.js', 'Composed screening registry', [
