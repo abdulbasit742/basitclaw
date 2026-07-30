@@ -1,11 +1,11 @@
 import { fileURLToPath } from 'node:url';
 import { prepareEvidenceLifecycle } from './evidence/evidenceServer.js';
-import { createEvidenceTimeAttestationGovernanceAwareApp } from './evidence/evidenceTimeAttestationGovernanceServer.js';
+import { createEvidenceDisclosureAwareApp } from './evidence/evidenceDisclosureServer.js';
 import { prepareIdentityLifecycle, prepareIdentityProvider } from './runtime.js';
 
 export async function startEvidenceRuntime({
   env = process.env,
-  app = createEvidenceTimeAttestationGovernanceAwareApp({ env }),
+  app = createEvidenceDisclosureAwareApp({ env }),
   logger = console
 } = {}) {
   const identity = await prepareIdentityProvider({ authenticationGateway: app.authenticationGateway, env, logger });
