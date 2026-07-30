@@ -14,11 +14,18 @@ import {
   EvidenceAssuranceBundleAuthenticationError,
   EvidenceAssuranceBundleStoreError
 } from './evidenceAssuranceBundleStore.js';
+import {
+  EvidenceAssuranceReceiptSignatureError,
+  EvidenceAssuranceReceiptStoreError
+} from './evidenceAssuranceReceiptStore.js';
 
 const STATUS_ROUTE = '/api/workforce-audit/assurance-bundles/status';
 const GOVERNANCE_ROUTE = /^\/api\/workforce-audit\/evidence\/([^/]+)\/assurance-bundles$/;
 const CLAIM_ROUTE = '/api/workforce-audit/assurance-recipient/bundles/claim';
 const ACK_ROUTE = /^\/api\/workforce-audit\/assurance-recipient\/bundles\/([^/]+)\/acknowledge$/;
+const RECEIPTS_ROUTE = '/api/workforce-audit/assurance-delivery-receipts';
+const RECEIPT_ROUTE = /^\/api\/workforce-audit\/assurance-delivery-receipts\/([^/]+)$/;
+const RECEIPT_VERIFY_ROUTE = '/api/workforce-audit/assurance-delivery-receipts/verify';
 
 export function createEvidenceAssuranceBundleHandler({
   registry,
@@ -30,7 +37,9 @@ export function createEvidenceAssuranceBundleHandler({
   if (!authenticationGateway || typeof authenticationGateway.authenticate !== 'function') throw new TypeError('An authentication gateway is required.');
 
   function matches(pathname) {
-    return pathname === STATUS_ROUTE || pathname === CLAIM_ROUTE || GOVERNANCE_ROUTE.test(pathname) || ACK_ROUTE.test(pathname);
+    return pathname === STATUS_ROUTE || pathname === CLAIM_ROUTE || pathname === RECEIPTS_ROUTE
+      || pathname === RECEIPT_VERIFY_ROUTE || GOVERNANCE_ROUTE.test(pathname)
+      || ACK_ROUTE.test(pathname) || RECEIPT_ROUTE.test(pathname);
   }
 
   async function handle(req, res, requestId = randomUUID()) {
@@ -40,9 +49,21 @@ export function createEvidenceAssuranceBundleHandler({
       if (recipientBoundary) return await handleRecipient(req, res, url, requestId);
       return await handleGovernance(req, res, url, requestId);
     } catch (error) {
-      if (error instanceof EvidenceAssuranceBundleAuthenticationError) {
-        record(securityTelemetry, { type: 'assurance_bundle.recipient_authentication_failed', severity: 'critical', outcome: 'denied', requestId, method: req.method, route: url.pathname, details: { reason: error.details?.reason ?? error.code } });
-        return sendJson(res, 401, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId, { 'www-authenticate': 'HMAC realm="workforce-audit-assurance-recipient"' });
+      if (error instanceof EvidenceAssuranceBundleAuthenticationError
+          || error instanceof EvidenceAssuranceReceiptSignatureError) {
+        record(securityTelemetry, {
+          type: error instanceof EvidenceAssuranceReceiptSignatureError
+            ? 'assurance_receipt.signature_failed'
+            : 'assurance_bundle.recipient_authentication_failed',
+          severity: 'critical', outcome: 'denied', requestId, method: req.method, route: url.pathname,
+          details: { reason: error.details?.reason ?? error.code }
+        });
+        return sendJson(res, 401, {
+          success: false,
+          error: 'The assurance recipient acknowledgement could not be authenticated.',
+          code: error.code,
+          meta: { requestId }
+        }, requestId, { 'www-authenticate': 'HMAC realm="workforce-audit-assurance-recipient"' });
       }
       if (error instanceof SecurityControlBusyError) {
         return sendJson(res, 423, { success: false, error: 'The assurance bundle boundary is busy. Retry the request.', code: 'EVIDENCE_ASSURANCE_BUNDLE_BUSY', details: error.details, meta: { requestId } }, requestId, { 'retry-after': String(Math.max(1, Math.ceil((error.details?.retryAfterMs ?? 1000) / 1000))) });
@@ -51,7 +72,8 @@ export function createEvidenceAssuranceBundleHandler({
         return sendJson(res, 503, { success: false, error: error.message, code: error.code ?? 'EVIDENCE_ASSURANCE_BUNDLE_STORE_UNAVAILABLE', details: error.details, meta: { requestId } }, requestId, { 'retry-after': '30' });
       }
       if (error instanceof EvidenceValidationError || error instanceof EvidenceConflictError || error instanceof EvidenceNotFoundError
-          || error instanceof EvidenceIntegrityError || error instanceof EvidenceStoreError || error instanceof EvidenceAssuranceBundleStoreError) {
+          || error instanceof EvidenceIntegrityError || error instanceof EvidenceStoreError
+          || error instanceof EvidenceAssuranceBundleStoreError || error instanceof EvidenceAssuranceReceiptStoreError) {
         record(securityTelemetry, { type: 'assurance_bundle.request_denied', severity: error instanceof EvidenceIntegrityError || error instanceof EvidenceStoreError ? 'critical' : 'high', outcome: 'denied', requestId, method: req.method, route: url.pathname, details: { reason: error.code } });
         return sendJson(res, error.statusCode ?? 500, { success: false, error: error.message, code: error.code, details: error.details, meta: { requestId } }, requestId, error.statusCode === 503 ? { 'retry-after': '30' } : {});
       }
@@ -74,19 +96,36 @@ export function createEvidenceAssuranceBundleHandler({
       if (failed && !failed.allowed) return rateLimited(res, requestId, failed);
       return sendJson(res, 401, { success: false, error: error.message, code: error.code, meta: { requestId } }, requestId, { 'www-authenticate': challenge(authenticationGateway.mode) });
     }
-    const permission = req.method === 'POST' ? 'evidence:export' : 'governance:read';
+    const exportWrite = req.method === 'POST' && GOVERNANCE_ROUTE.test(url.pathname);
+    const permission = exportWrite ? 'evidence:export' : 'governance:read';
     try { authenticationGateway.authorise(principal, permission); }
     catch (error) {
       if (!(error instanceof AuthorizationError)) throw error;
       record(securityTelemetry, { type: 'authorization.denied', severity: 'high', outcome: 'denied', requestId, subject: principal.subject, tenantId: principal.tenantId, method: req.method, route: url.pathname, details: { reason: error.details?.reason, boundary: 'assurance-bundles' } });
       return sendJson(res, 403, { success: false, error: error.message, code: error.code, meta: meta(requestId, principal) }, requestId);
     }
-    const policy = req.method === 'POST' ? 'privileged' : 'read';
+    const policy = exportWrite ? 'privileged' : 'read';
     const decision = rateLimiter?.consume?.(`credential:${principal.keyId ?? principal.subject}:assurance-bundles`, policy);
     if (decision) { applyRateHeaders(res, rateLimiter, decision); if (!decision.allowed) return rateLimited(res, requestId, decision); }
 
     if (url.pathname === STATUS_ROUTE && req.method === 'GET') {
       return sendJson(res, 200, { success: true, data: registry.assuranceBundleStatus(principal.tenantId), meta: meta(requestId, principal) }, requestId);
+    }
+    if (url.pathname === RECEIPTS_ROUTE && req.method === 'GET') {
+      const data = registry.assuranceDeliveryReceipts(principal.tenantId, { limit: positiveInteger(url.searchParams.get('limit'), 100, 5000) });
+      return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId);
+    }
+    if (url.pathname === RECEIPT_VERIFY_ROUTE && req.method === 'POST') {
+      const data = registry.verifyAssuranceDeliveryReceipts(principal.tenantId);
+      record(securityTelemetry, { type: 'assurance_receipt.chain_verified', severity: 'info', outcome: 'success', requestId, subject: principal.subject, tenantId: principal.tenantId, method: req.method, route: url.pathname, details: { checkedReceipts: data.checkedReceipts, chainHead: data.chainHead } });
+      return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId);
+    }
+    const receiptMatch = url.pathname.match(RECEIPT_ROUTE);
+    if (receiptMatch && req.method === 'GET') {
+      const bundleId = decodeSegment(receiptMatch[1], 'bundleId');
+      const data = registry.assuranceDeliveryReceipt(principal.tenantId, bundleId);
+      if (!data) return notFound(res, requestId);
+      return sendJson(res, 200, { success: true, data, meta: meta(requestId, principal) }, requestId);
     }
     const match = url.pathname.match(GOVERNANCE_ROUTE);
     if (!match) return notFound(res, requestId);
@@ -117,11 +156,17 @@ export function createEvidenceAssuranceBundleHandler({
       if (!match) return notFound(res, requestId);
       data = registry.acknowledgeAssuranceBundle(decodeSegment(match[1], 'bundleId'), body, req.headers);
     }
-    record(securityTelemetry, { type: url.pathname === CLAIM_ROUTE ? 'assurance_bundle.claimed' : 'assurance_bundle.delivered', severity: 'info', outcome: 'success', requestId, method: req.method, route: url.pathname, details: url.pathname === CLAIM_ROUTE ? { recipientId: data.recipientId, claimed: data.jobs.length } : { bundleId: data.bundleId, recipientId: data.recipientId } });
+    record(securityTelemetry, {
+      type: url.pathname === CLAIM_ROUTE ? 'assurance_bundle.claimed' : 'assurance_bundle.delivered',
+      severity: 'info', outcome: 'success', requestId, method: req.method, route: url.pathname,
+      details: url.pathname === CLAIM_ROUTE
+        ? { recipientId: data.recipientId, claimed: data.jobs.length }
+        : { bundleId: data.bundleId, recipientId: data.recipientId, deliveryReceiptId: data.deliveryReceiptId ?? null }
+    });
     return sendJson(res, 200, { success: true, data, meta: { requestId } }, requestId);
   }
 
-  return Object.freeze({ matches, handle, statusRoute: STATUS_ROUTE, claimRoute: CLAIM_ROUTE });
+  return Object.freeze({ matches, handle, statusRoute: STATUS_ROUTE, claimRoute: CLAIM_ROUTE, receiptsRoute: RECEIPTS_ROUTE });
 }
 
 async function readJson(req, maximumBytes, allowed) { const bytes = await readBody(req, maximumBytes); let input; try { input = JSON.parse(bytes.toString('utf8') || '{}'); } catch { throw new EvidenceValidationError('The assurance bundle request must contain valid JSON.', { field: 'body' }); } if (!input || typeof input !== 'object' || Array.isArray(input)) throw new EvidenceValidationError('The assurance bundle request body must be an object.', { field: 'body' }); for (const key of Object.keys(input)) if (!allowed.has(key)) throw new EvidenceValidationError(`Unsupported assurance bundle field ${key}.`, { field: key }); return input; }
