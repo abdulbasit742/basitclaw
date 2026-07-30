@@ -18,7 +18,7 @@ import {
 
 const tenantId = 'tenant-disclosure';
 const evidenceId = `EVD-${'a'.repeat(32)}`;
-const content = Buffer.from('confidential payroll control evidence');
+const content = Buffer.alloc(2048, 'x');
 const contentSha256 = createHash('sha256').update(content).digest('hex');
 const encryptionKey = Buffer.alloc(32, 101).toString('base64');
 const recipient = generateKeyPairSync('rsa', {
@@ -180,7 +180,7 @@ test('revocation, expiry and byte limits fail closed', () => {
   assert.equal(store.get(tenantId, expiring.requestId).state, 'expired');
   assert.throws(() => approve(store, expiring.requestId, 'compliance.one'));
 
-  const small = fixture({ maximumPackageBytes: 10 }).store;
+  const small = fixture({ maximumPackageBytes: 1024 }).store;
   const limited = create(small).request;
   approve(small, limited.requestId, 'compliance.one');
   assert.throws(() => approve(small, limited.requestId, 'compliance.two'));
