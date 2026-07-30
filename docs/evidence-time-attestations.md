@@ -38,7 +38,7 @@ basitclaw-evidence-time-attestation-v1
 <nonce>
 ```
 
-For Ed25519, sign these bytes directly. For RSA, use RSA-PSS with SHA-256, MGF1-SHA-256 and a 32-byte salt. Return the signature as canonical base64.
+For Ed25519, sign these bytes directly. For RSA, use RSA-PSS with SHA-256 and MGF1-SHA-256. BasitClaw accepts standards-conforming authority-selected PSS salt lengths and verifies them with the configured public key. Return the signature as canonical base64.
 
 The challenge values are available only through the authenticated governance route:
 
