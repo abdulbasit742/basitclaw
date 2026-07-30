@@ -9,14 +9,11 @@ test('enabled assurance bundles cannot start without encrypted evidence custody'
   assert.throws(() => createEvidenceAssuranceBundleAwareApp({
     evidenceRegistry: {
       assuranceBundleEnabled: true,
-      enabled: false,
-      createAssuranceBundle() {},
-      assuranceBundles() {},
-      claimAssuranceBundles() {},
-      acknowledgeAssuranceBundle() {},
-      assuranceBundleStatus() {}
+      enabled: false
     },
     baseApp,
-    rateLimiter: null
+    rateLimiter: null,
+    assuranceBundleHandler: { matches() { return false; }, handle() {} }
   }), /require enabled encrypted evidence custody/);
+  baseApp.close();
 });
