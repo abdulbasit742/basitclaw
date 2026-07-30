@@ -5,6 +5,7 @@ const requiredFiles = [
   'src/evidence/evidenceTimeAttestationRegistry.js',
   'src/evidence/evidenceTimeAttestationHandler.js',
   'src/evidence/evidenceTimeAttestationServer.js',
+  'src/auditTestProgrammeServer.js',
   'src/types/evidence-time-attestations.d.ts',
   'test/evidenceTimeAttestationStore.test.js',
   'test/evidenceTimeAttestationHttp.test.js',
@@ -46,8 +47,12 @@ await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-atte
   'createEvidencePreservationAwareApp', 'evidenceTimeAttestationHandler', 'resilienceScheduler',
   'require enabled immutable evidence preservation'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Time-attestation runtime', [
-  'createEvidenceTimeAttestationAwareApp'
+await requireMarkers('src/auditTestProgrammeServer.js', 'Composed time-attestation runtime', [
+  'createEvidenceTimeAttestationAwareApp',
+  'evidenceTimeAttestationHandler'
+]);
+await requireMarkers('src/evidenceRuntime.js', 'Outermost audit runtime', [
+  'createAuditTestProgrammeAwareApp'
 ]);
 await requireMarkers('test/evidenceTimeAttestationStore.test.js', 'Time-attestation safeguards', [
   'before resolving tenant or archive state',
@@ -61,6 +66,9 @@ await requireMarkers('test/evidenceTimeAttestationHttp.test.js', 'Time-attestati
   'governance routes require authentication',
   'malformed encoded archive IDs',
   'closeAllConnections'
+]);
+await requireMarkers('test/evidenceTimeAttestationServer.test.js', 'Time-attestation startup dependency', [
+  'cannot start without immutable preservation'
 ]);
 await requireMarkers('docs/evidence-time-attestations.md', 'Time-attestation runbook', [
   'RFC 3161', 'court-certified', 'basitclaw-evidence-time-attestation-v1',
