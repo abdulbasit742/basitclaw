@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
+import { sha256 } from '../src/evidence/evidenceCrypto.js';
 import { createEvidenceVerificationBundleHandler } from '../src/evidence/evidenceVerificationBundleHandler.js';
 
 const evidenceId = `EVD-${'a'.repeat(32)}`;
@@ -8,6 +9,7 @@ const bundleId = `EVB-${'b'.repeat(32)}`;
 
 function fixture({ permissions = ['governance:read', 'evidence:preserve'] } = {}) {
   const calls = [];
+  const telemetry = [];
   const service = {
     health() {
       return { status: 'ready', enabled: true, mode: 'signed-stateless-portable-verification-bundles', rawEvidenceContentIncluded: false };
@@ -49,8 +51,9 @@ function fixture({ permissions = ['governance:read', 'evidence:preserve'] } = {}
       }
     }
   };
-  const handler = createEvidenceVerificationBundleHandler({ service, authenticationGateway });
-  return { handler, calls };
+  const securityTelemetry = { record(event) { telemetry.push(event); } };
+  const handler = createEvidenceVerificationBundleHandler({ service, authenticationGateway, securityTelemetry });
+  return { handler, calls, telemetry };
 }
 
 async function listen(handler) {
@@ -94,17 +97,18 @@ test('status reports stateless no-content posture', async (t) => {
   assert.equal(response.body.data.rawEvidenceContentIncluded, false);
 });
 
-test('governed export returns a signed JSON attachment', async (t) => {
-  const { handler, calls } = fixture();
+test('governed export returns a signed JSON attachment and hashes recipient telemetry', async (t) => {
+  const { handler, calls, telemetry } = fixture();
   const { server, port } = await listen(handler);
   t.after(() => close(server));
+  const recipientRef = 'external-auditor@example.test';
   const response = await request(port, {
     method: 'POST',
     path: `/api/workforce-audit/evidence/${evidenceId}/verification-bundles`,
     body: {
       version: 1,
       profile: 'audit',
-      recipientRef: 'external-auditor',
+      recipientRef,
       purpose: 'Independent assurance evidence review',
       confirmation: `EXPORT PROOF ${evidenceId} V1`
     }
@@ -114,6 +118,10 @@ test('governed export returns a signed JSON attachment', async (t) => {
   assert.equal(response.body.data.bundle.bundleId, bundleId);
   assert.equal(calls[0].tenantId, 'tenant-a');
   assert.equal(calls[0].context.actor, 'manager.one');
+  assert.equal(telemetry.length, 1);
+  assert.equal(telemetry[0].details.recipientDigest, sha256(recipientRef));
+  assert.equal('recipientRef' in telemetry[0].details, false);
+  assert.equal(JSON.stringify(telemetry[0]).includes(recipientRef), false);
 });
 
 test('authenticated verification endpoint validates supplied bundle', async (t) => {
