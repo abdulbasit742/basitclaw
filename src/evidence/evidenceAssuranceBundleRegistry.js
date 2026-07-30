@@ -7,6 +7,7 @@ import {
 } from './evidenceAssuranceBundleStore.js';
 
 const MANIFEST_FORMAT = 'basitclaw-assurance-bundle-manifest';
+const GOVERNANCE_REQUEST_ID = /^AGR-[a-f0-9]{32}$/;
 
 export function createEvidenceAssuranceBundleRegistry({
   registry,
@@ -31,6 +32,7 @@ export function createEvidenceAssuranceBundleRegistry({
     }
     const purpose = cleanText(input.purpose, 'purpose', 10, 500);
     const requestedBy = safeIdentifier(context.actor, 'actor');
+    const governance = normaliseGovernance(input);
     const content = registry.readContent(tenantId, item.evidenceId, { version });
     if (content.sha256 !== metadata.sha256 || content.sizeBytes !== metadata.sizeBytes) {
       throw new EvidenceIntegrityError('The assurance bundle content does not match immutable evidence metadata.', { evidenceId: item.evidenceId, version });
@@ -38,20 +40,13 @@ export function createEvidenceAssuranceBundleRegistry({
 
     const verification = registry.verify(tenantId, item.evidenceId);
     const custodyEvents = registry.events(tenantId, { evidenceId: item.evidenceId, limit: 5000 });
-    const screening = typeof registry.screeningReport === 'function'
-      ? registry.screeningReport(tenantId, item.evidenceId, { version })
-      : null;
-    const externalScans = typeof registry.externalScanAttestations === 'function'
-      ? registry.externalScanAttestations(tenantId, item.evidenceId, { version, limit: 5000 })
-      : [];
+    const screening = typeof registry.screeningReport === 'function' ? registry.screeningReport(tenantId, item.evidenceId, { version }) : null;
+    const externalScans = typeof registry.externalScanAttestations === 'function' ? registry.externalScanAttestations(tenantId, item.evidenceId, { version, limit: 5000 }) : [];
     const preservationReceipts = typeof registry.evidencePreservationReceipts === 'function'
-      ? registry.evidencePreservationReceipts(tenantId, item.evidenceId, { limit: 100_000 })
-          .filter((receipt) => receipt.evidenceVersion === version)
+      ? registry.evidencePreservationReceipts(tenantId, item.evidenceId, { limit: 100_000 }).filter((receipt) => receipt.evidenceVersion === version)
       : [];
     const timeAttestations = preservationReceipts.flatMap((receipt) => (
-      typeof registry.evidenceTimeAttestations === 'function'
-        ? registry.evidenceTimeAttestations(tenantId, receipt.archiveId, { limit: 100_000 })
-        : []
+      typeof registry.evidenceTimeAttestations === 'function' ? registry.evidenceTimeAttestations(tenantId, receipt.archiveId, { limit: 100_000 }) : []
     ));
     const timeAttestationVerifications = preservationReceipts.map((receipt) => (
       typeof registry.effectiveArchiveVerification === 'function'
@@ -76,6 +71,7 @@ export function createEvidenceAssuranceBundleRegistry({
         governedArchives: timeAttestationVerifications.length,
         operationalQuorumArchives: timeAttestationVerifications.filter((entry) => entry.operationalQuorumSatisfied).length
       },
+      disclosurePolicy: governance,
       content: {
         filename: content.filename,
         mediaType: content.mediaType,
@@ -96,6 +92,10 @@ export function createEvidenceAssuranceBundleRegistry({
       requestedBy,
       purpose,
       operationallyAcceptable,
+      governanceRequestId: governance.governanceRequestId,
+      purposeCode: governance.purposeCode,
+      legalBasis: governance.legalBasis,
+      residencyZone: governance.residencyZone,
       sectionDigests
     };
     manifest.bundleDigest = sha256(stableStringify(manifest));
@@ -117,7 +117,6 @@ export function createEvidenceAssuranceBundleRegistry({
     if (evidenceId) registry.get(tenantId, evidenceId);
     return bundles.list(tenantId, { evidenceId, ...options });
   }
-
   function claimAssuranceBundles(body, headers) { return bundles.claimSigned(body, headers); }
   function acknowledgeAssuranceBundle(bundleId, body, headers) { return bundles.acknowledgeSigned(bundleId, body, headers); }
   function assuranceBundleStatus(tenantId) { return bundles.tenantStatus(tenantId); }
@@ -126,29 +125,16 @@ export function createEvidenceAssuranceBundleRegistry({
     const base = registry.health();
     const delivery = bundles.health();
     const unavailable = bundles.required && delivery.status !== 'ready';
-    return {
-      ...base,
-      required: Boolean(base.required || bundles.required),
-      status: unavailable || base.status === 'unavailable' ? 'unavailable' : base.status,
-      assuranceBundles: delivery
-    };
+    return { ...base, required: Boolean(base.required || bundles.required), status: unavailable || base.status === 'unavailable' ? 'unavailable' : base.status, assuranceBundles: delivery };
   }
 
   function tenantStatus(tenantId) {
     const base = registry.tenantStatus(tenantId);
     try {
       const delivery = bundles.tenantStatus(tenantId);
-      return {
-        ...base,
-        status: bundles.required && delivery.status !== 'ready' ? 'unavailable' : base.status,
-        assuranceBundles: delivery
-      };
+      return { ...base, status: bundles.required && delivery.status !== 'ready' ? 'unavailable' : base.status, assuranceBundles: delivery };
     } catch (error) {
-      return {
-        ...base,
-        status: bundles.required ? 'unavailable' : base.status,
-        assuranceBundles: { status: 'unavailable', enabled: bundles.enabled, required: bundles.required, error: error?.code ?? 'assurance_bundle_store_unavailable' }
-      };
+      return { ...base, status: bundles.required ? 'unavailable' : base.status, assuranceBundles: { status: 'unavailable', enabled: bundles.enabled, required: bundles.required, error: error?.code ?? 'assurance_bundle_store_unavailable' } };
     }
   }
 
@@ -172,14 +158,19 @@ export function createEvidenceAssuranceBundleRegistryFromEnvironment(env = proce
   return createEvidenceAssuranceBundleRegistry({ registry, bundles });
 }
 
-function redactItem(item) {
-  const copy = structuredClone(item);
-  if (copy.legalHold) {
-    delete copy.legalHold.matterId;
-    delete copy.legalHold.reason;
-  }
-  return copy;
+function normaliseGovernance(input) {
+  const supplied = input.governanceRequestId !== undefined || input.purposeCode !== undefined || input.legalBasis !== undefined || input.residencyZone !== undefined;
+  if (!supplied) return { governanceRequestId: null, purposeCode: null, legalBasis: null, residencyZone: null };
+  const governanceRequestId = String(input.governanceRequestId ?? '');
+  if (!GOVERNANCE_REQUEST_ID.test(governanceRequestId)) throw new EvidenceValidationError('governanceRequestId is invalid.', { field: 'governanceRequestId' });
+  return {
+    governanceRequestId,
+    purposeCode: safeIdentifier(input.purposeCode, 'purposeCode'),
+    legalBasis: safeIdentifier(input.legalBasis, 'legalBasis'),
+    residencyZone: safeIdentifier(input.residencyZone, 'residencyZone')
+  };
 }
+function redactItem(item) { const copy = structuredClone(item); if (copy.legalHold) { delete copy.legalHold.matterId; delete copy.legalHold.reason; } return copy; }
 function positiveInteger(value, field) { const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1_000_000) throw new EvidenceValidationError(`${field} must be a positive integer.`, { field }); return parsed; }
 function safeIdentifier(value, field) { const text = String(value ?? '').trim(); if (!/^[a-zA-Z0-9][a-zA-Z0-9._:@/-]{1,191}$/.test(text)) throw new EvidenceValidationError(`${field} is invalid.`, { field }); return text; }
 function cleanText(value, field, min, max) { const text = String(value ?? '').trim(); if (text.length < min || text.length > max) throw new EvidenceValidationError(`${field} must contain ${min} to ${max} characters.`, { field }); return text; }
