@@ -11,9 +11,10 @@ export function createEvidenceTimeAttestationGovernanceAwareApp({
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
   baseApp = createEvidenceTimeAttestationAwareApp({ env, evidenceRegistry, rateLimiter }),
   securityTelemetry = baseApp.apiSecurity?.securityTelemetry,
+  authenticationGateway = notaryGovernanceAuthenticationGateway(baseApp.authenticationGateway),
   governanceHandler = createEvidenceTimeAttestationGovernanceHandler({
     registry: evidenceRegistry,
-    authenticationGateway: baseApp.authenticationGateway,
+    authenticationGateway,
     rateLimiter,
     securityTelemetry
   })
@@ -73,4 +74,18 @@ export function createEvidenceTimeAttestationGovernanceAwareApp({
   server.evidenceTimeAttestationGovernanceHandler = governanceHandler;
   server.auditRegistry = baseApp.auditRegistry;
   return server;
+}
+
+function notaryGovernanceAuthenticationGateway(base) {
+  if (!base || typeof base.authenticate !== 'function' || typeof base.authorise !== 'function') {
+    throw new TypeError('A base authentication gateway is required.');
+  }
+  return Object.freeze({
+    ...base,
+    authenticate: base.authenticate.bind(base),
+    authorise(principal, permission) {
+      const mapped = permission === 'evidence:notary-govern' ? 'evidence:preserve' : permission;
+      return base.authorise(principal, mapped);
+    }
+  });
 }
