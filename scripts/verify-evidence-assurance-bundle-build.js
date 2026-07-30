@@ -24,7 +24,7 @@ await requireMarkers('src/evidence/evidenceAssuranceBundleStore.js', 'Assurance 
   'RSA-OAEP-SHA256+A256GCM', 'recipientEncryptedPackages: true',
   'plaintextPersistence: false', 'arbitraryOutboundEgress: false',
   'registerReplay', 'maximumClaimBytes', 'created && !committed',
-  'state !== \'expired\'', 'Dedicated assurance bundle encryption keys are required'
+  "state !== 'expired'", 'Dedicated assurance bundle encryption keys are required'
 ]);
 await requireMarkers('src/evidence/evidenceAssuranceBundleRegistry.js', 'Assurance bundle registry', [
   'createEvidenceTimeAttestationGovernanceRegistryFromEnvironment',
@@ -44,7 +44,11 @@ await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js', 'Assurance
   'evidenceAssuranceBundleHandler',
   'require enabled encrypted evidence custody'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Assurance bundle runtime', ['createEvidenceAssuranceBundleAwareApp']);
+await requireMarkers('src/regulatory/regulatoryCaseServer.js', 'Composed regulatory server', [
+  'createEvidenceAssuranceBundleAwareApp',
+  'evidenceAssuranceBundleHandler'
+]);
+await requireMarkers('src/evidenceRuntime.js', 'Assurance bundle runtime', ['createRegulatoryCaseAwareApp']);
 await requireMarkers('src/security/accessControl.js', 'Assurance bundle permission', ['evidence:export']);
 await requireMarkers('docs/evidence-assurance-bundles.md', 'Assurance bundle runbook', [
   'Pass 21', 'never sends bundles to arbitrary URLs', 'recipient private key',
