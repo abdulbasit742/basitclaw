@@ -82,7 +82,7 @@ export function createEvidenceVerificationBundleAwareApp({
   return server;
 }
 
-function operationalProofRegistry(registry) {
+export function operationalProofRegistry(registry) {
   return Object.freeze({
     ...registry,
     verifyEvidenceTimeAttestations(tenantId, archiveId) {
@@ -99,7 +99,9 @@ function operationalProofRegistry(registry) {
       const effective = registry.effectiveArchiveVerification?.(tenantId, archiveId);
       if (effective?.attestationDecisions) {
         const limit = Math.min(Math.max(Number(options.limit ?? 5000), 1), 5000);
-        return effective.attestationDecisions.slice(-limit);
+        return effective.attestationDecisions
+          .filter((entry) => entry.governance?.operationallyAcceptable === true)
+          .slice(-limit);
       }
       return registry.evidenceTimeAttestations(tenantId, archiveId, options);
     }
