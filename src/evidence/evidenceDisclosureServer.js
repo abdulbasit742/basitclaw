@@ -11,9 +11,10 @@ export function createEvidenceDisclosureAwareApp({
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
   baseApp = createEvidenceTimeAttestationAwareApp({ env, evidenceRegistry, rateLimiter }),
   securityTelemetry = baseApp.apiSecurity?.securityTelemetry,
+  disclosureAuthenticationGateway = createDisclosureAuthenticationGateway(baseApp.authenticationGateway),
   disclosureHandler = createEvidenceDisclosureHandler({
     registry: evidenceRegistry,
-    authenticationGateway: baseApp.authenticationGateway,
+    authenticationGateway: disclosureAuthenticationGateway,
     rateLimiter,
     securityTelemetry
   })
@@ -60,6 +61,7 @@ export function createEvidenceDisclosureAwareApp({
   server.resilienceScheduler = baseApp.resilienceScheduler;
   server.apiSecurity = baseApp.apiSecurity;
   server.authenticationGateway = baseApp.authenticationGateway;
+  server.disclosureAuthenticationGateway = disclosureAuthenticationGateway;
   server.identityEntitlements = baseApp.identityEntitlements;
   server.privilegedAccess = baseApp.privilegedAccess;
   server.scimHandler = baseApp.scimHandler;
@@ -75,4 +77,23 @@ export function createEvidenceDisclosureAwareApp({
   server.evidenceDisclosureHandler = disclosureHandler;
   server.auditRegistry = baseApp.auditRegistry;
   return server;
+}
+
+function createDisclosureAuthenticationGateway(authenticationGateway) {
+  if (!authenticationGateway || typeof authenticationGateway.authenticate !== 'function'
+      || typeof authenticationGateway.authorise !== 'function') {
+    throw new TypeError('An authentication gateway is required for evidence disclosures.');
+  }
+  return Object.freeze({
+    mode: authenticationGateway.mode,
+    authenticate: authenticationGateway.authenticate.bind(authenticationGateway),
+    authorise(principal, permission) {
+      const mappedPermission = permission === 'evidence:disclose:approve'
+        ? 'backup:restore'
+        : permission === 'evidence:disclose'
+          ? 'governance:read'
+          : permission;
+      return authenticationGateway.authorise(principal, mappedPermission);
+    }
+  });
 }
