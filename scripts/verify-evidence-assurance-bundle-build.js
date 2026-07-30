@@ -7,8 +7,10 @@ const requiredFiles = [
   'src/evidence/evidenceAssuranceBundleServer.js',
   'test/evidenceAssuranceBundleStore.test.js',
   'test/evidenceAssuranceBundleRegistry.test.js',
+  'test/evidenceAssuranceBundleHttp.test.js',
   'docs/evidence-assurance-bundles.md',
-  'src/types/evidence-assurance-bundles.d.ts'
+  'src/types/evidence-assurance-bundles.d.ts',
+  'config/evidence-screening.production.env.example'
 ];
 for (const file of requiredFiles) await access(new URL(`../${file}`, import.meta.url));
 
@@ -25,6 +27,7 @@ await requireMarkers('src/evidence/evidenceAssuranceBundleStore.js', 'Assurance 
   'registerReplay',
   'maximumClaimBytes',
   'created && !committed',
+  'state !== \'expired\'',
   'Dedicated assurance bundle encryption keys are required'
 ]);
 await requireMarkers('src/evidence/evidenceAssuranceBundleRegistry.js', 'Assurance bundle registry', [
@@ -47,15 +50,17 @@ await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js', 'Assurance
   'createEvidenceTimeAttestationAwareApp',
   'evidenceAssuranceBundleHandler'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Assurance bundle runtime', [
-  'createEvidenceAssuranceBundleAwareApp'
-]);
+await requireMarkers('src/evidenceRuntime.js', 'Assurance bundle runtime', ['createEvidenceAssuranceBundleAwareApp']);
 await requireMarkers('src/security/accessControl.js', 'Assurance bundle permission', ['evidence:export']);
 await requireMarkers('docs/evidence-assurance-bundles.md', 'Assurance bundle runbook', [
-  'never sends bundles to arbitrary URLs',
-  'recipient private key',
-  'EXPORT EVD-',
-  'RSA-OAEP-SHA256',
-  'one-time claim token'
+  'never sends bundles to arbitrary URLs', 'recipient private key', 'EXPORT EVD-',
+  'RSA-OAEP-SHA256', 'one-time claim token'
+]);
+await requireMarkers('config/evidence-screening.production.env.example', 'Assurance bundle production configuration', [
+  'WORKFORCE_AUDIT_ASSURANCE_BUNDLE_MODE=pull',
+  'WORKFORCE_AUDIT_ASSURANCE_BUNDLE_REQUIRED=true',
+  'WORKFORCE_AUDIT_ASSURANCE_BUNDLE_KEYS=',
+  'WORKFORCE_AUDIT_ASSURANCE_RECIPIENTS=',
+  'No outbound URL is configured'
 ]);
 console.log('Evidence assurance bundle build verification passed.');
