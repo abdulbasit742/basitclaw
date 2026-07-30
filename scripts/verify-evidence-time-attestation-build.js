@@ -47,9 +47,12 @@ await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-atte
   'require enabled immutable evidence preservation'
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'Composed time-attestation runtime', [
-  'createEvidenceTimeAttestationGovernanceAwareApp'
+  'createEvidenceTimeAttestationRequestAwareApp'
 ]);
-await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceServer.js', 'Time-attestation outer composition', [
+await requireMarkers('src/evidence/evidenceTimeAttestationRequestServer.js', 'Notary request outer composition', [
+  'createEvidenceTimeAttestationGovernanceAwareApp', 'evidenceTimeAttestationRequestHandler'
+]);
+await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceServer.js', 'Time-attestation governance composition', [
   'createEvidenceTimeAttestationAwareApp', 'evidenceTimeAttestationHandler'
 ]);
 await requireMarkers('test/evidenceTimeAttestationStore.test.js', 'Time-attestation safeguards', [
