@@ -1,11 +1,11 @@
 import { fileURLToPath } from 'node:url';
 import { prepareEvidenceLifecycle } from './evidence/evidenceServer.js';
-import { createEvidenceTimeAttestationAwareApp } from './evidence/evidenceTimeAttestationServer.js';
+import { createEvidenceAssuranceBundleAwareApp } from './evidence/evidenceAssuranceBundleServer.js';
 import { prepareIdentityLifecycle, prepareIdentityProvider } from './runtime.js';
 
 export async function startEvidenceRuntime({
   env = process.env,
-  app = createEvidenceTimeAttestationAwareApp({ env }),
+  app = createEvidenceAssuranceBundleAwareApp({ env }),
   logger = console
 } = {}) {
   const identity = await prepareIdentityProvider({ authenticationGateway: app.authenticationGateway, env, logger });
@@ -39,9 +39,7 @@ function envValue(value) {
 function once(operation) { let completed = false; return () => { if (completed) return; completed = true; operation(); }; }
 function integer(value, field, minimum, maximum) {
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
-    throw new TypeError(`${field} must be an integer from ${minimum} to ${maximum}.`);
-  }
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new TypeError(`${field} must be an integer from ${minimum} to ${maximum}.`);
   return parsed;
 }
 
