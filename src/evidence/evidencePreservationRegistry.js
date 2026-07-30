@@ -10,6 +10,8 @@ import {
   createEvidencePreservationStoreFromEnvironment
 } from './evidencePreservationStore.js';
 
+const RECEIPT_QUERY_LIMIT = 100_000;
+
 export function createEvidencePreservationRegistry({
   registry,
   preservation = createEvidencePreservationStore({ mode: 'disabled' })
@@ -74,19 +76,15 @@ export function createEvidencePreservationRegistry({
     const base = preservation.tenantStatus(tenantId);
     if (!preservation.enabled) return base;
     const items = registry.list(tenantId, { limit: 5000 });
+    const receiptsByEvidence = indexReceipts(preservation.list(tenantId, { limit: RECEIPT_QUERY_LIMIT }));
     let totalVersions = 0;
     let preservedVersions = 0;
     for (const item of items) {
       if (item.status === 'disposed') continue;
+      const receipts = receiptsByEvidence.get(item.evidenceId) ?? [];
       for (const version of item.versions) {
         totalVersions += 1;
-        if (preservation.verifiedForVersion(
-          tenantId,
-          item.evidenceId,
-          version.version,
-          version.sha256,
-          item.retentionUntil
-        )) preservedVersions += 1;
+        if (versionReady(version, item.retentionUntil, receipts)) preservedVersions += 1;
       }
     }
     return {
@@ -123,18 +121,25 @@ export function createEvidencePreservationRegistry({
   }
 
   function get(tenantId, evidenceId) {
-    return withPreservation(tenantId, registry.get(tenantId, evidenceId));
+    const item = registry.get(tenantId, evidenceId);
+    const receipts = preservation.enabled
+      ? preservation.list(tenantId, { evidenceId: item.evidenceId, limit: RECEIPT_QUERY_LIMIT })
+      : [];
+    return withPreservation(item, receipts);
   }
 
   function list(tenantId, options = {}) {
-    return registry.list(tenantId, options).map((item) => withPreservation(tenantId, item));
+    const items = registry.list(tenantId, options);
+    if (!preservation.enabled || !items.length) return items.map((item) => withPreservation(item, []));
+    const receiptsByEvidence = indexReceipts(preservation.list(tenantId, { limit: RECEIPT_QUERY_LIMIT }));
+    return items.map((item) => withPreservation(item, receiptsByEvidence.get(item.evidenceId) ?? []));
   }
 
   function screeningReport(tenantId, evidenceId, options = {}) {
     const report = registry.screeningReport(tenantId, evidenceId, options);
     return {
       ...report,
-      preservationReceipts: preservation.list(tenantId, { evidenceId, limit: 5000 })
+      preservationReceipts: preservation.list(tenantId, { evidenceId, limit: RECEIPT_QUERY_LIMIT })
         .filter((receipt) => receipt.evidenceVersion === report.version)
     };
   }
@@ -148,7 +153,7 @@ export function createEvidencePreservationRegistry({
   }
 
   function verifyEvidenceReceipts(tenantId, evidenceId) {
-    const receipts = preservation.list(tenantId, { evidenceId, limit: 5000 });
+    const receipts = preservation.list(tenantId, { evidenceId, limit: RECEIPT_QUERY_LIMIT });
     for (const receipt of receipts) preservation.verify(tenantId, receipt.archiveId);
     return { valid: true, tenantId, evidenceId, checkedArchives: receipts.length };
   }
@@ -191,16 +196,11 @@ export function createEvidencePreservationRegistry({
     }
   }
 
-  function withPreservation(tenantId, item) {
+  function withPreservation(item, receipts) {
     if (!item) return item;
-    const receipts = preservation.list(tenantId, { evidenceId: item.evidenceId, limit: 5000 });
     const readyVersions = new Set();
     for (const version of item.versions ?? []) {
-      if (receipts.some((receipt) => receipt.evidenceVersion === version.version
-          && receipt.contentSha256 === version.sha256
-          && new Date(receipt.retentionUntil) >= new Date(item.retentionUntil))) {
-        readyVersions.add(version.version);
-      }
+      if (versionReady(version, item.retentionUntil, receipts)) readyVersions.add(version.version);
     }
     return {
       ...item,
@@ -238,6 +238,22 @@ export function createEvidencePreservationRegistryFromEnvironment(env = process.
   const registry = createExternalScanEvidenceRegistryFromEnvironment(env);
   const preservation = createEvidencePreservationStoreFromEnvironment({ env, evidenceRegistry: registry });
   return createEvidencePreservationRegistry({ registry, preservation });
+}
+
+function indexReceipts(receipts) {
+  const index = new Map();
+  for (const receipt of receipts) {
+    const rows = index.get(receipt.evidenceId) ?? [];
+    rows.push(receipt);
+    index.set(receipt.evidenceId, rows);
+  }
+  return index;
+}
+
+function versionReady(version, retentionUntil, receipts) {
+  return receipts.some((receipt) => receipt.evidenceVersion === version.version
+    && receipt.contentSha256 === version.sha256
+    && receipt.retentionUntil === new Date(retentionUntil).toISOString());
 }
 
 function positiveInteger(value, field) {
