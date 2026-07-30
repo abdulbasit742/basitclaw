@@ -3,13 +3,13 @@ import { createServer } from 'node:http';
 import { createAdaptiveRateLimiterFromEnvironment } from '../security/rateLimiter.js';
 import { createEvidenceDisclosureHandler } from './evidenceDisclosureHandler.js';
 import { createEvidenceDisclosureRegistryFromEnvironment } from './evidenceDisclosureRegistry.js';
-import { createEvidenceTimeAttestationAwareApp } from './evidenceTimeAttestationServer.js';
+import { createEvidenceTimeAttestationGovernanceAwareApp } from './evidenceTimeAttestationGovernanceServer.js';
 
 export function createEvidenceDisclosureAwareApp({
   env = process.env,
   evidenceRegistry = createEvidenceDisclosureRegistryFromEnvironment(env),
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
-  baseApp = createEvidenceTimeAttestationAwareApp({ env, evidenceRegistry, rateLimiter }),
+  baseApp = createEvidenceTimeAttestationGovernanceAwareApp({ env, evidenceRegistry, rateLimiter }),
   securityTelemetry = baseApp.apiSecurity?.securityTelemetry,
   disclosureHandler = createEvidenceDisclosureHandler({
     registry: evidenceRegistry,
@@ -19,11 +19,13 @@ export function createEvidenceDisclosureAwareApp({
   })
 } = {}) {
   if (evidenceRegistry.evidenceDisclosureEnabled
-      && (!evidenceRegistry.evidencePreservationEnabled || !evidenceRegistry.evidenceTimeAttestationEnabled)) {
-    throw new TypeError('Evidence disclosure packages require preservation and time-attestation controls.');
+      && (!evidenceRegistry.evidencePreservationEnabled
+        || !evidenceRegistry.evidenceTimeAttestationEnabled
+        || !evidenceRegistry.evidenceTimeAttestationGovernanceEnabled)) {
+    throw new TypeError('Evidence disclosure packages require preservation, time-attestation and notary-governance controls.');
   }
   const baseHandler = baseApp.listeners('request')[0];
-  if (typeof baseHandler !== 'function') throw new TypeError('The time-attestation application must expose a request handler.');
+  if (typeof baseHandler !== 'function') throw new TypeError('The time-attestation governance application must expose a request handler.');
 
   const server = createServer(async (req, res) => {
     const requestId = randomUUID();
@@ -32,11 +34,7 @@ export function createEvidenceDisclosureAwareApp({
       if (disclosureHandler.matches(url.pathname)) return await disclosureHandler.handle(req, res, requestId);
       return await baseHandler(req, res);
     } catch (error) {
-      console.error('Unhandled evidence disclosure server error', {
-        requestId,
-        code: error?.code,
-        error: error?.message
-      });
+      console.error('Unhandled evidence disclosure server error', { requestId, code: error?.code, error: error?.message });
       if (!res.headersSent) {
         res.writeHead(500, {
           'content-type': 'application/json; charset=utf-8',
@@ -44,12 +42,7 @@ export function createEvidenceDisclosureAwareApp({
           'x-content-type-options': 'nosniff',
           'x-request-id': requestId
         });
-        return res.end(JSON.stringify({
-          success: false,
-          error: 'Internal server error.',
-          code: 'INTERNAL_ERROR',
-          meta: { requestId }
-        }));
+        return res.end(JSON.stringify({ success: false, error: 'Internal server error.', code: 'INTERNAL_ERROR', meta: { requestId } }));
       }
       res.destroy(error);
     }
@@ -72,6 +65,7 @@ export function createEvidenceDisclosureAwareApp({
   server.externalScanJobDeliveryHandler = baseApp.externalScanJobDeliveryHandler;
   server.evidencePreservationHandler = baseApp.evidencePreservationHandler;
   server.evidenceTimeAttestationHandler = baseApp.evidenceTimeAttestationHandler;
+  server.evidenceTimeAttestationGovernanceHandler = baseApp.evidenceTimeAttestationGovernanceHandler;
   server.evidenceDisclosureHandler = disclosureHandler;
   server.auditRegistry = baseApp.auditRegistry;
   return server;
