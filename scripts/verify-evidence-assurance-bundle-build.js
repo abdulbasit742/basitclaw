@@ -8,6 +8,7 @@ const requiredFiles = [
   'test/evidenceAssuranceBundleStore.test.js',
   'test/evidenceAssuranceBundleRegistry.test.js',
   'test/evidenceAssuranceBundleHttp.test.js',
+  'test/evidenceAssuranceBundleServer.test.js',
   'docs/evidence-assurance-bundles.md',
   'src/types/evidence-assurance-bundles.d.ts',
   'config/evidence-screening.production.env.example'
@@ -32,23 +33,16 @@ await requireMarkers('src/evidence/evidenceAssuranceBundleStore.js', 'Assurance 
 ]);
 await requireMarkers('src/evidence/evidenceAssuranceBundleRegistry.js', 'Assurance bundle registry', [
   'EXPORT ${item.evidenceId} V${version} TO ${recipientId}',
-  'custodyEvents',
-  'preservationReceipts',
-  'timeAttestations',
-  'sectionDigests',
-  'redactItem'
+  'custodyEvents', 'preservationReceipts', 'timeAttestations', 'sectionDigests', 'redactItem'
 ]);
 await requireMarkers('src/evidence/evidenceAssuranceBundleHandler.js', 'Assurance bundle APIs', [
-  '/api/workforce-audit/assurance-bundles/status',
-  '/assurance-bundles',
-  '/api/workforce-audit/assurance-recipient/bundles/claim',
-  'evidence:export',
-  'HMAC realm',
-  'decodeSegment'
+  '/api/workforce-audit/assurance-bundles/status', '/assurance-bundles',
+  '/api/workforce-audit/assurance-recipient/bundles/claim', 'evidence:export',
+  'HMAC realm', 'decodeSegment'
 ]);
 await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js', 'Assurance bundle server', [
-  'createEvidenceTimeAttestationAwareApp',
-  'evidenceAssuranceBundleHandler'
+  'createEvidenceTimeAttestationAwareApp', 'evidenceAssuranceBundleHandler',
+  'require enabled encrypted evidence custody'
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'Assurance bundle runtime', ['createEvidenceAssuranceBundleAwareApp']);
 await requireMarkers('src/security/accessControl.js', 'Assurance bundle permission', ['evidence:export']);
