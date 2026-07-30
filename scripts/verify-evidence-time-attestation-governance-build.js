@@ -11,12 +11,10 @@ const requiredFiles = [
   'config/evidence-screening.production.env.example'
 ];
 for (const file of requiredFiles) await access(new URL(`../${file}`, import.meta.url));
-
 async function requireMarkers(path, label, markers) {
   const content = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
   for (const marker of markers) if (!content.includes(marker)) throw new Error(`${label} build verification failed: missing ${marker}.`);
 }
-
 await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceStore.js', 'Notary governance journal', [
   'basitclaw-evidence-time-attestation-governance-index',
   'attestation_revoked', 'provider_revoked', 'key_revoked', 'attestation_superseded',
@@ -48,7 +46,11 @@ await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js', 'Governanc
   'createEvidenceTimeAttestationGovernanceAwareApp',
   'evidenceTimeAttestationGovernanceHandler'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Outermost evidence runtime', ['createEvidenceAssuranceBundleAwareApp']);
+await requireMarkers('src/regulatory/regulatoryCaseServer.js', 'Regulatory outer composition', [
+  'createEvidenceAssuranceBundleAwareApp',
+  'evidenceAssuranceBundleHandler'
+]);
+await requireMarkers('src/evidenceRuntime.js', 'Outermost evidence runtime', ['createRegulatoryCaseAwareApp']);
 await requireMarkers('test/evidenceTimeAttestationGovernance.test.js', 'Notary governance regressions', [
   'prospective provider revocation preserves earlier proof',
   'retroactive key compromise excludes historical attestations',
