@@ -7,6 +7,7 @@ const requiredFiles = [
   'src/types/regulatory-cases.d.ts',
   'test/regulatoryCaseStore.test.js',
   'test/regulatoryCaseHttp.test.js',
+  'test/regulatoryCaseServer.test.js',
   'docs/regulatory-case-register.md',
   'config/evidence-screening.production.env.example'
 ];
@@ -53,6 +54,11 @@ await requireMarkers('test/regulatoryCaseHttp.test.js', 'Regulatory HTTP safegua
   'separate permissions',
   'malformed paths fail cleanly',
   'closeAllConnections'
+]);
+await requireMarkers('test/regulatoryCaseServer.test.js', 'Regulatory runtime safeguards', [
+  'maps governed permissions',
+  "['governance:read', 'backup:restore']",
+  'evidenceTimeAttestationGovernanceHandler'
 ]);
 await requireMarkers('docs/regulatory-case-register.md', 'Regulatory case runbook', [
   'Do not paste regulator letters',
