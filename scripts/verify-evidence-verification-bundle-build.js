@@ -6,6 +6,7 @@ const requiredFiles = [
   'src/evidence/evidenceVerificationBundleServer.js',
   'test/evidenceVerificationBundle.test.js',
   'test/evidenceVerificationBundleHttp.test.js',
+  'test/evidenceVerificationBundleGovernance.test.js',
   'scripts/verify-evidence-bundle.js',
   'docs/evidence-verification-bundles.md',
   'src/types/evidence-verification-bundles.d.ts',
@@ -40,15 +41,28 @@ await requireMarkers('src/evidence/evidenceVerificationBundleHandler.js', 'Porta
   'evidence.verification_bundle_exported'
 ]);
 await requireMarkers('src/evidence/evidenceVerificationBundleServer.js', 'Portable bundle server', [
-  'createEvidenceTimeAttestationAwareApp',
+  'createEvidenceTimeAttestationGovernanceAwareApp',
+  'operationalProofRegistry',
+  'operationalQuorumSatisfied',
+  'operationallyAcceptable === true',
+  'evidenceTimeAttestationGovernanceHandler',
   'evidenceVerificationBundleHandler',
   'resilienceScheduler'
+]);
+await requireMarkers('test/evidenceVerificationBundleGovernance.test.js', 'Portable bundle governance safeguards', [
+  'uses operational quorum after revocation governance',
+  'NTA-revoked',
+  'NTA-accepted',
+  'governanceRequiredForDisposition'
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'Portable bundle runtime', [
   'createEvidenceVerificationBundleAwareApp'
 ]);
 await requireMarkers('docs/evidence-verification-bundles.md', 'Portable bundle runbook', [
+  'Pass 21',
   'never contains raw evidence bytes',
+  'operationally acceptable',
+  'revocation and supersession',
   'EXPORT PROOF EVD-',
   'evidence:bundle:verify',
   'cannot revoke copies already delivered'
