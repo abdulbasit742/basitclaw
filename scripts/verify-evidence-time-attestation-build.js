@@ -7,6 +7,8 @@ const requiredFiles = [
   'src/evidence/evidenceTimeAttestationServer.js',
   'src/types/evidence-time-attestations.d.ts',
   'test/evidenceTimeAttestationStore.test.js',
+  'test/evidenceTimeAttestationHttp.test.js',
+  'test/evidenceTimeAttestationServer.test.js',
   'docs/evidence-time-attestations.md',
   'config/evidence-screening.production.env.example'
 ];
@@ -22,42 +24,38 @@ await requireMarkers('src/evidence/evidenceTimeAttestationStore.js', 'Time-attes
   'basitclaw-evidence-time-attestation-v1', 'nonce_replay',
   'timestamp_before_archive', 'timestamp_delay_exceeded',
   'minimumProviders', 'distinctProviders', 'quorumSatisfied',
-  'authenticate', 'Resolve tenant/archive state only after the authority has authenticated',
+  'Resolve tenant/archive state only after the authority has authenticated',
   'verifyArchivesWithIndex', 'quorumForArchives', 'batchedVerification: true',
   'encryptEvidenceJson', 'previousHash', 'invalid_notary_configuration',
   'EVIDENCE_TIME_ATTESTATION_REQUIRED'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationRegistry.js', 'Time-attestation composition', [
-  'basitclaw-preservation-receipt-challenge-v1',
-  'preservationReceiptChallengeDigest', 'objectEnvelopeSha256', 'missingQuorum',
-  'quorumForArchives', 'requiredForDisposition',
-  'createEvidenceTimeAttestationRegistryFromEnvironment'
+  'basitclaw-preservation-receipt-challenge-v1', 'preservationReceiptChallengeDigest',
+  'objectEnvelopeSha256', 'missingQuorum', 'quorumForArchives',
+  'requiredForDisposition', 'createEvidenceTimeAttestationRegistryFromEnvironment'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationHandler.js', 'Time-attestation API', [
-  '/api/workforce-audit/evidence-notary/attestations',
-  '/notary-challenge', 'ATTESTATIONS_ROUTE', 'VERIFY_ROUTE',
-  'Signature realm', 'authFailure', 'EVIDENCE_TIME_ATTESTATION_BUSY'
+  '/api/workforce-audit/evidence-notary/attestations', '/notary-challenge',
+  'ATTESTATIONS_ROUTE', 'VERIFY_ROUTE', 'Signature realm', 'authFailure',
+  'EVIDENCE_TIME_ATTESTATION_BUSY', 'decodeSegment'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-attestation server', [
-  'createEvidencePreservationAwareApp', 'evidenceTimeAttestationHandler', 'resilienceScheduler'
+  'createEvidencePreservationAwareApp', 'evidenceTimeAttestationHandler', 'resilienceScheduler',
+  'require enabled immutable evidence preservation'
 ]);
-await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js', 'Time-attestation outer composition', [
-  'createEvidenceTimeAttestationAwareApp'
-]);
-await requireMarkers('src/evidenceRuntime.js', 'Composed evidence runtime', [
-  'createEvidenceAssuranceBundleAwareApp'
-]);
+await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js', 'Time-attestation outer composition', ['createEvidenceTimeAttestationAwareApp']);
+await requireMarkers('src/evidenceRuntime.js', 'Composed evidence runtime', ['createEvidenceAssuranceBundleAwareApp']);
 await requireMarkers('test/evidenceTimeAttestationStore.test.js', 'Time-attestation safeguards', [
-  'before resolving tenant or archive state',
-  'authority-selected salt lengths',
-  'future schema fields',
-  'batches quorum evaluation once',
-  'typed store error'
+  'before resolving tenant or archive state', 'authority-selected salt lengths',
+  'future schema fields', 'batches quorum evaluation once', 'typed store error'
+]);
+await requireMarkers('test/evidenceTimeAttestationHttp.test.js', 'Time-attestation HTTP safeguards', [
+  'signed callback accepts and idempotently replays', 'governance routes require authentication',
+  'malformed encoded archive IDs', 'closeAllConnections'
 ]);
 await requireMarkers('docs/evidence-time-attestations.md', 'Time-attestation runbook', [
   'RFC 3161', 'court-certified', 'basitclaw-evidence-time-attestation-v1',
-  'distinct authority providers', 'EVIDENCE_TIME_ATTESTATION_REQUIRED',
-  'does not replace legal review'
+  'distinct authority providers', 'EVIDENCE_TIME_ATTESTATION_REQUIRED', 'does not replace legal review'
 ]);
 await requireMarkers('config/evidence-screening.production.env.example', 'Production notary configuration', [
   'WORKFORCE_AUDIT_EVIDENCE_NOTARY_MODE=shared-file',
