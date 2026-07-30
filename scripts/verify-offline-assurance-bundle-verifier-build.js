@@ -1,0 +1,9 @@
+import { access, readFile } from 'node:fs/promises';
+const requiredFiles=['src/evidence/evidenceAssuranceBundleVerifier.js','scripts/verify-assurance-bundle.js','test/evidenceAssuranceBundleVerifier.test.js','docs/offline-assurance-bundle-verifier.md','src/types/evidence-assurance-bundle-verifier.d.ts'];
+for(const file of requiredFiles)await access(new URL(`../${file}`,import.meta.url));
+async function requireMarkers(path,label,markers){const content=await readFile(new URL(`../${path}`,import.meta.url),'utf8');for(const marker of markers)if(!content.includes(marker))throw new Error(`${label} build verification failed: missing ${marker}.`);}
+await requireMarkers('src/evidence/evidenceAssuranceBundleVerifier.js','Offline verifier',['RSA-OAEP-SHA256+A256GCM','RSA_PKCS1_OAEP_PADDING','aes-256-gcm','PACKAGE_DIGEST_MISMATCH','AAD_BINDING_MISMATCH','SECTION_DIGEST_MISMATCH','CONTENT_DIGEST_MISMATCH','CUSTODY_NOT_VERIFIED','OPERATIONAL_ASSURANCE_REJECTED','plaintext.fill(0)','contentBase64']);
+await requireMarkers('scripts/verify-assurance-bundle.js','Offline verifier CLI',['--package','--private-key','--expected-package-sha256','--allow-operationally-unacceptable','mode: 0o600','flag: \'wx\'','MAX_INPUT_BYTES']);
+await requireMarkers('test/evidenceAssuranceBundleVerifier.test.js','Offline verifier tests',['wrong recipient private key','ciphertext tampering','manifest section digest mismatch','operationally unacceptable','contentBase64\'in report']);
+await requireMarkers('docs/offline-assurance-bundle-verifier.md','Offline verifier runbook',['operates entirely on local files','never includes evidence bytes','does not independently query later revocations','zeroes the unwrapped AES key','does not make the evidence acceptable']);
+console.log('Offline assurance bundle verifier build verification passed.');
