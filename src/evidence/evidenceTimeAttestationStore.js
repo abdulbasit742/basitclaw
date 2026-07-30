@@ -109,20 +109,22 @@ export function createEvidenceTimeAttestationStore({
 
   function record(input) {
     const submitted = normaliseSubmission(input);
-    const currentChallenge = challenge(submitted.tenantId, submitted.archiveId);
-    assertChallengeMatch(submitted, currentChallenge);
     const authority = authorityFor(submitted.providerId, submitted.keyId);
-    assertTimestamp(submitted.timestamp, currentChallenge.archivedAt);
     const canonical = canonicalAttestation(submitted);
     verifyAuthoritySignature(authority, canonical, submitted.signature, submitted.providerId, submitted.keyId);
     const attestationId = `NTA-${sha256(`${canonical}\n${submitted.signature}`).slice(0, 32)}`;
 
+    // Resolve tenant/archive state only after the authority has authenticated.
+    const currentChallenge = challenge(submitted.tenantId, submitted.archiveId);
+    assertChallengeMatch(submitted, currentChallenge);
+    assertTimestamp(submitted.timestamp, currentChallenge.archivedAt);
+
     return lock.withLock(`evidence-time-attestations:${submitted.tenantId}`, () => {
       const index = loadIndex(submitted.tenantId);
-      const duplicate = index.records.find((record) => record.attestationId === attestationId);
+      const duplicate = index.records.find((entry) => entry.attestationId === attestationId);
       if (duplicate) return { accepted: false, duplicate: true, attestation: publicRecord(duplicate) };
-      if (index.records.some((record) => record.providerId === submitted.providerId
-          && record.keyId === submitted.keyId && record.nonce === submitted.nonce)) {
+      if (index.records.some((entry) => entry.providerId === submitted.providerId
+          && entry.keyId === submitted.keyId && entry.nonce === submitted.nonce)) {
         throw new EvidenceTimeAttestationAuthenticationError('The time-authority nonce has already been used.', {
           reason: 'nonce_replay', providerId: submitted.providerId, keyId: submitted.keyId
         });
@@ -132,7 +134,7 @@ export function createEvidenceTimeAttestationStore({
           reason: 'record_capacity', maxRecords: recordLimit
         });
       }
-      const record = {
+      const entry = {
         format: RECORD_FORMAT,
         version: 1,
         attestationId,
@@ -141,13 +143,13 @@ export function createEvidenceTimeAttestationStore({
         receivedAt: now().toISOString(),
         previousHash: index.headHash
       };
-      record.hash = recordHash(record);
-      index.records.push(record);
-      index.sequence = record.sequence;
-      index.headHash = record.hash;
-      index.updatedAt = record.receivedAt;
+      entry.hash = recordHash(entry);
+      index.records.push(entry);
+      index.sequence = entry.sequence;
+      index.headHash = entry.hash;
+      index.updatedAt = entry.receivedAt;
       saveIndex(submitted.tenantId, index);
-      return { accepted: true, duplicate: false, attestation: publicRecord(record) };
+      return { accepted: true, duplicate: false, attestation: publicRecord(entry) };
     });
   }
 
@@ -156,64 +158,51 @@ export function createEvidenceTimeAttestationStore({
     const archive = archiveId === null ? null : archiveIdentifier(archiveId);
     const provider = providerId === null ? null : identifier(providerId, 'providerId');
     let records = loadSafe(tenant).records;
-    if (archive) records = records.filter((record) => record.archiveId === archive);
-    if (provider) records = records.filter((record) => record.providerId === provider);
+    if (archive) records = records.filter((entry) => entry.archiveId === archive);
+    if (provider) records = records.filter((entry) => entry.providerId === provider);
     return records
       .slice(-integer(limit, 'limit', 1, 5000))
       .reverse()
       .map(publicRecord);
   }
 
-  function verifyArchive(tenantId, archiveId) {
+  function verifyArchives(tenantId, archiveIds = null) {
     const tenant = identifier(tenantId, 'tenantId');
+    const index = loadSafe(tenant); // loadIndex already validates the full hash chain once.
+    const requested = archiveIds === null
+      ? [...new Set(index.records.map((entry) => entry.archiveId))]
+      : [...new Set(archiveIds.map(archiveIdentifier))];
+    return verifyArchivesWithIndex(tenant, index, requested);
+  }
+
+  function verifyArchive(tenantId, archiveId) {
     const archive = archiveIdentifier(archiveId);
-    const expected = challenge(tenant, archive);
-    const index = loadSafe(tenant);
-    verifyChain(index);
-    const records = index.records.filter((record) => record.archiveId === archive);
-    const providers = new Set();
-    for (const record of records) {
-      assertChallengeMatch(record, expected);
-      assertTimestamp(record.timestamp, expected.archivedAt);
-      const authority = authorityFor(record.providerId, record.keyId);
-      verifyAuthoritySignature(authority, canonicalAttestation(record), record.signature, record.providerId, record.keyId);
-      if (record.hash !== recordHash(record)) {
-        throw new EvidenceTimeAttestationIntegrityError('A time-attestation record hash is invalid.', {
-          attestationId: record.attestationId
-        });
-      }
-      providers.add(record.providerId);
-    }
-    return {
-      valid: true,
-      tenantId: tenant,
-      archiveId: archive,
-      attestationCount: records.length,
-      distinctProviders: providers.size,
-      minimumProviders: quorum,
-      quorumSatisfied: providers.size >= quorum,
-      providerIds: [...providers].sort()
-    };
+    const batch = verifyArchives(tenantId, [archive]);
+    return batch.results.get(archive);
+  }
+
+  function quorumForArchives(tenantId, archiveIds) {
+    const batch = verifyArchives(tenantId, archiveIds);
+    return new Map([...batch.results].map(([archiveId, verification]) => [
+      archiveId,
+      verification.quorumSatisfied ? verification : null
+    ]));
   }
 
   function quorumForArchive(tenantId, archiveId) {
-    const verification = verifyArchive(tenantId, archiveId);
-    return verification.quorumSatisfied ? verification : null;
+    return quorumForArchives(tenantId, [archiveId]).get(archiveIdentifier(archiveId)) ?? null;
   }
 
   function verifyTenant(tenantId) {
     const tenant = identifier(tenantId, 'tenantId');
-    const index = loadSafe(tenant);
-    verifyChain(index);
-    const archives = new Set(index.records.map((record) => record.archiveId));
-    for (const archiveId of archives) verifyArchive(tenant, archiveId);
+    const batch = verifyArchives(tenant, null);
     return {
       valid: true,
       tenantId: tenant,
-      checkedAttestations: index.records.length,
-      checkedArchives: archives.size,
-      headSequence: index.sequence,
-      headHash: index.headHash
+      checkedAttestations: batch.checkedAttestations,
+      checkedArchives: batch.results.size,
+      headSequence: batch.headSequence,
+      headHash: batch.headHash
     };
   }
 
@@ -221,12 +210,11 @@ export function createEvidenceTimeAttestationStore({
     const tenant = identifier(tenantId, 'tenantId');
     try {
       const index = loadSafe(tenant);
-      verifyChain(index);
       const archiveProviders = new Map();
-      for (const record of index.records) {
-        const providersForArchive = archiveProviders.get(record.archiveId) ?? new Set();
-        providersForArchive.add(record.providerId);
-        archiveProviders.set(record.archiveId, providersForArchive);
+      for (const entry of index.records) {
+        const providersForArchive = archiveProviders.get(entry.archiveId) ?? new Set();
+        providersForArchive.add(entry.providerId);
+        archiveProviders.set(entry.archiveId, providersForArchive);
       }
       const quorumArchives = [...archiveProviders.values()].filter((set) => set.size >= quorum).length;
       return {
@@ -264,6 +252,7 @@ export function createEvidenceTimeAttestationStore({
         encrypted: true,
         asymmetricSignatures: true,
         replayProtected: true,
+        batchedVerification: true,
         minimumProviders: quorum,
         configuredProviders: authorities.size,
         clockSkewSeconds: skewMs / 1000,
@@ -278,6 +267,66 @@ export function createEvidenceTimeAttestationStore({
         mode: 'shared-file-encrypted-time-attestations',
         error: error?.code ?? 'evidence_time_attestation_store_unavailable'
       };
+    }
+  }
+
+  function verifyArchivesWithIndex(tenant, index, archiveIds) {
+    const grouped = new Map(archiveIds.map((archiveId) => [archiveId, []]));
+    for (const entry of index.records) {
+      if (grouped.has(entry.archiveId)) grouped.get(entry.archiveId).push(entry);
+    }
+    const results = new Map();
+    let checkedAttestations = 0;
+    for (const archiveId of archiveIds) {
+      const expected = challenge(tenant, archiveId);
+      const providers = new Set();
+      const records = grouped.get(archiveId) ?? [];
+      for (const entry of records) {
+        verifyStoredRecord(entry, expected);
+        providers.add(entry.providerId);
+        checkedAttestations += 1;
+      }
+      results.set(archiveId, {
+        valid: true,
+        tenantId: tenant,
+        archiveId,
+        attestationCount: records.length,
+        distinctProviders: providers.size,
+        minimumProviders: quorum,
+        quorumSatisfied: providers.size >= quorum,
+        providerIds: [...providers].sort()
+      });
+    }
+    return {
+      valid: true,
+      tenantId: tenant,
+      results,
+      checkedAttestations,
+      headSequence: index.sequence,
+      headHash: index.headHash
+    };
+  }
+
+  function verifyStoredRecord(entry, expected) {
+    assertChallengeMatch(entry, expected);
+    assertTimestamp(entry.timestamp, expected.archivedAt);
+    const authority = authorityFor(entry.providerId, entry.keyId);
+    try {
+      verifyAuthoritySignature(authority, canonicalAttestation(entry), entry.signature, entry.providerId, entry.keyId);
+    } catch (error) {
+      if (error instanceof EvidenceTimeAttestationAuthenticationError) {
+        throw new EvidenceTimeAttestationIntegrityError('A stored time-attestation signature is invalid.', {
+          attestationId: entry.attestationId,
+          providerId: entry.providerId,
+          keyId: entry.keyId
+        }, error);
+      }
+      throw error;
+    }
+    if (entry.hash !== recordHash(entry)) {
+      throw new EvidenceTimeAttestationIntegrityError('A time-attestation record hash is invalid.', {
+        attestationId: entry.attestationId
+      });
     }
   }
 
@@ -356,7 +405,9 @@ export function createEvidenceTimeAttestationStore({
     record,
     list,
     verifyArchive,
+    verifyArchives,
     quorumForArchive,
+    quorumForArchives,
     verifyTenant,
     tenantStatus,
     health
@@ -364,18 +415,25 @@ export function createEvidenceTimeAttestationStore({
 }
 
 export function createEvidenceTimeAttestationStoreFromEnvironment({ env = process.env, resolveChallenge } = {}) {
-  const mode = environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_NOTARY_MODE) ?? 'disabled';
-  const requiredForDisposition = parseBoolean(environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_NOTARY_REQUIRED_FOR_DISPOSITION) ?? false);
-  if (mode === 'disabled') return createEvidenceTimeAttestationStore({ mode, requiredForDisposition });
-  const rawKeys = environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_NOTARY_KEYS);
-  const primaryKeyId = environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_NOTARY_PRIMARY_KEY_ID);
-  const rawProviders = environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_NOTARY_PROVIDERS);
-  if (!rawKeys || !primaryKeyId || !rawProviders) {
-    throw new EvidenceTimeAttestationStoreError('Time-attestation keys, primary key ID and providers are required.', {
-      reason: 'missing_notary_configuration'
-    });
-  }
   try {
+    const mode = environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_NOTARY_MODE) ?? 'disabled';
+    const requiredForDisposition = parseBoolean(environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_NOTARY_REQUIRED_FOR_DISPOSITION) ?? false);
+    if (mode === 'disabled') {
+      if (requiredForDisposition) {
+        throw new EvidenceTimeAttestationStoreError('Required time attestations cannot be disabled.', {
+          reason: 'invalid_notary_configuration'
+        });
+      }
+      return createEvidenceTimeAttestationStore({ mode, requiredForDisposition });
+    }
+    const rawKeys = environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_NOTARY_KEYS);
+    const primaryKeyId = environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_NOTARY_PRIMARY_KEY_ID);
+    const rawProviders = environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_NOTARY_PROVIDERS);
+    if (!rawKeys || !primaryKeyId || !rawProviders) {
+      throw new EvidenceTimeAttestationStoreError('Time-attestation keys, primary key ID and providers are required.', {
+        reason: 'missing_notary_configuration'
+      });
+    }
     return createEvidenceTimeAttestationStore({
       mode,
       requiredForDisposition,
@@ -446,10 +504,10 @@ function normaliseChallenge(input) {
   };
 }
 
-function assertChallengeMatch(input, challenge) {
-  if (input.tenantId !== challenge.tenantId || input.archiveId !== challenge.archiveId
-      || input.receiptSha256 !== challenge.receiptSha256
-      || input.objectEnvelopeSha256 !== challenge.objectEnvelopeSha256) {
+function assertChallengeMatch(input, expected) {
+  if (input.tenantId !== expected.tenantId || input.archiveId !== expected.archiveId
+      || input.receiptSha256 !== expected.receiptSha256
+      || input.objectEnvelopeSha256 !== expected.objectEnvelopeSha256) {
     throw new EvidenceTimeAttestationAuthenticationError('The time attestation does not match the preservation challenge.', {
       reason: 'challenge_mismatch', archiveId: input.archiveId
     });
@@ -496,13 +554,18 @@ function verifyAuthoritySignature(authority, canonical, encodedSignature, provid
     });
   }
   const data = Buffer.from(canonical, 'utf8');
-  const valid = authority.algorithm === 'ed25519'
-    ? verifyAsymmetric(null, data, authority.publicKey, signature)
-    : verifyAsymmetric('sha256', data, {
-      key: authority.publicKey,
-      padding: constants.RSA_PKCS1_PSS_PADDING,
-      saltLength: 32
-    }, signature);
+  let valid = false;
+  try {
+    valid = authority.algorithm === 'ed25519'
+      ? verifyAsymmetric(null, data, authority.publicKey, signature)
+      : verifyAsymmetric('sha256', data, {
+        key: authority.publicKey,
+        padding: constants.RSA_PKCS1_PSS_PADDING,
+        saltLength: constants.RSA_PSS_SALTLEN_AUTO
+      }, signature);
+  } catch {
+    valid = false;
+  }
   if (!valid) {
     throw new EvidenceTimeAttestationAuthenticationError(undefined, {
       reason: 'signature_invalid', providerId, keyId
@@ -511,20 +574,20 @@ function verifyAuthoritySignature(authority, canonical, encodedSignature, provid
 }
 
 function canonicalAttestation(input) { return canonicalTimeAttestation(input); }
-function recordHash(record) {
-  const { hash, ...body } = record;
+function recordHash(entry) {
+  const { hash, ...body } = entry;
   return sha256(stableStringify(body));
 }
 function verifyChain(index) {
   let previousHash = null;
   let expectedSequence = 1;
-  for (const record of index.records) {
-    if (record.sequence !== expectedSequence || record.previousHash !== previousHash || record.hash !== recordHash(record)) {
+  for (const entry of index.records) {
+    if (entry.sequence !== expectedSequence || entry.previousHash !== previousHash || entry.hash !== recordHash(entry)) {
       throw new EvidenceTimeAttestationIntegrityError('The time-attestation hash chain is invalid.', {
-        attestationId: record.attestationId, expectedSequence
+        attestationId: entry.attestationId, expectedSequence
       });
     }
-    previousHash = record.hash;
+    previousHash = entry.hash;
     expectedSequence += 1;
   }
   if (index.sequence !== expectedSequence - 1 || index.headHash !== previousHash) {
@@ -535,21 +598,21 @@ function emptyIndex(tenantId, date) {
   const time = date.toISOString();
   return { format: INDEX_FORMAT, version: 1, tenantId, createdAt: time, updatedAt: time, sequence: 0, headHash: null, records: [] };
 }
-function publicRecord(record) {
+function publicRecord(entry) {
   return {
-    attestationId: record.attestationId,
-    archiveId: record.archiveId,
-    providerId: record.providerId,
-    keyId: record.keyId,
-    receiptSha256: record.receiptSha256,
-    objectEnvelopeSha256: record.objectEnvelopeSha256,
-    timestamp: record.timestamp,
-    policyId: record.policyId,
-    nonce: record.nonce,
-    sequence: record.sequence,
-    receivedAt: record.receivedAt,
-    hash: record.hash,
-    previousHash: record.previousHash
+    attestationId: entry.attestationId,
+    archiveId: entry.archiveId,
+    providerId: entry.providerId,
+    keyId: entry.keyId,
+    receiptSha256: entry.receiptSha256,
+    objectEnvelopeSha256: entry.objectEnvelopeSha256,
+    timestamp: entry.timestamp,
+    policyId: entry.policyId,
+    nonce: entry.nonce,
+    sequence: entry.sequence,
+    receivedAt: entry.receivedAt,
+    hash: entry.hash,
+    previousHash: entry.previousHash
   };
 }
 function indexAad(tenantId) { return `basitclaw:evidence-time-attestations:${tenantId}`; }
@@ -573,7 +636,9 @@ function disabledStore() {
     record() { throw new EvidenceConflictError('Evidence time attestations are disabled.'); },
     list() { return []; },
     verifyArchive() { throw new EvidenceConflictError('Evidence time attestations are disabled.'); },
+    verifyArchives(tenantId) { return { valid: true, tenantId, results: new Map(), checkedAttestations: 0, headSequence: 0, headHash: null }; },
     quorumForArchive() { return null; },
+    quorumForArchives(_tenantId, archiveIds = []) { return new Map(archiveIds.map((archiveId) => [archiveId, null])); },
     verifyTenant(tenantId) { return { valid: true, tenantId, checkedAttestations: 0, checkedArchives: 0 }; },
     tenantStatus() { return status; },
     health() { return status; }
