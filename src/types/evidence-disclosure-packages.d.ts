@@ -32,6 +32,31 @@ export interface EvidenceDisclosureSealedContent {
   ciphertextSha256: string;
 }
 
+export interface EvidenceDisclosureNotaryGovernance {
+  archiveId: string;
+  evidenceVersion: number;
+  effectiveVerification: {
+    cryptographicallyValid: boolean;
+    governanceEnabled: boolean;
+    operationallyAcceptable: boolean;
+    operationalQuorumSatisfied: boolean;
+    acceptableAttestations: number;
+    acceptableDistinctProviders: number;
+    acceptableProviderIds: string[];
+    rejectedAttestations: number;
+    governanceEvaluatedAt?: string;
+    governanceEventsConsidered?: number;
+    attestationDecisions: Array<Record<string, unknown> & {
+      governance: {
+        cryptographicallyValid: boolean;
+        operationallyAcceptable: boolean;
+        status: 'acceptable' | 'revoked' | 'superseded';
+        reasons: Array<Record<string, unknown>>;
+      };
+    }>;
+  };
+}
+
 export interface EvidenceDisclosureManifest {
   format: 'basitclaw-evidence-disclosure-manifest';
   version: 1;
@@ -67,13 +92,14 @@ export interface EvidenceDisclosureManifest {
     screeningReports: Array<Record<string, unknown>>;
     externalScanAttestations: Array<Record<string, unknown>>;
     preservationReceipts: Array<Record<string, unknown>>;
-    timeAttestations: Array<Record<string, unknown>>;
+    timeAttestationGovernance: EvidenceDisclosureNotaryGovernance[];
   };
   disclosurePolicy: {
     metadataOnlyDefault: true;
     contentRequiresApprovedRecipient: true;
     arbitraryRecipientKeysAccepted: false;
     plaintextPackagePersisted: false;
+    revokedOrSupersededAttestationsExcludedFromOperationalQuorum: true;
   };
 }
 
