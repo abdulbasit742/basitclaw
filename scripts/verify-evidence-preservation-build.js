@@ -39,7 +39,10 @@ await requireMarkers('src/evidence/evidencePreservationHandler.js', 'Evidence pr
 await requireMarkers('src/evidence/evidencePreservationServer.js', 'Evidence preservation server', [
   'createExternalScanAwareApp', 'evidencePreservationHandler', 'resilienceScheduler'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Composed evidence runtime', [
+await requireMarkers('src/evidenceRuntime.js', 'Outermost audit runtime', [
+  'createAuditTestProgrammeAwareApp'
+]);
+await requireMarkers('src/auditTestProgrammeServer.js', 'Test-programme runtime composition', [
   'createEvidenceTimeAttestationAwareApp'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-attestation runtime composition', [
