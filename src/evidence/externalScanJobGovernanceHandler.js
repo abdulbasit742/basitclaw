@@ -46,7 +46,7 @@ export function createExternalScanJobGovernanceHandler({ registry, authenticatio
       }
       const match = url.pathname.match(JOBS_ROUTE);
       if (!match) return notFound(res, requestId);
-      const evidenceId = decodeURIComponent(match[1]);
+      const evidenceId = decodePathSegment(match[1], 'evidenceId');
       registry.get(principal.tenantId, evidenceId);
       if (req.method === 'GET') {
         const data = registry.externalScanJobs(principal.tenantId, evidenceId, {
@@ -118,6 +118,10 @@ async function readJson(req, maximumBytes, allowed) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new EvidenceValidationError('External scan job request body must be an object.', { field: 'body' });
   for (const key of Object.keys(input)) if (!allowed.has(key)) throw new EvidenceValidationError(`External scan job request contains unsupported field ${key}.`, { field: key });
   return input;
+}
+function decodePathSegment(value, field) {
+  try { return decodeURIComponent(value); }
+  catch { throw new EvidenceValidationError(`The ${field} path segment contains invalid percent encoding.`, { field }); }
 }
 function positiveInteger(value, fallback, maximum) { if (value === null) return fallback; const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < 1) throw new EvidenceValidationError('limit must be a positive integer.', { field: 'limit' }); return Math.min(parsed, maximum); }
 function meta(requestId, principal) { return { requestId, tenantId: principal?.tenantId ?? null, keyId: principal?.keyId ?? null }; }
