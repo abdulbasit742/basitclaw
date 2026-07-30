@@ -1,5 +1,5 @@
 import { EvidenceConflictError, EvidenceIntegrityError, EvidenceValidationError } from './evidenceRegistry.js';
-import { createEvidenceTimeAttestationRegistryFromEnvironment } from './evidenceTimeAttestationRegistry.js';
+import { createEvidenceTimeAttestationGovernanceRegistryFromEnvironment } from './evidenceTimeAttestationGovernanceRegistry.js';
 import {
   createEvidenceDisclosureStore,
   createEvidenceDisclosureStoreFromEnvironment
@@ -17,8 +17,9 @@ export function createEvidenceDisclosureRegistry({
   registry,
   disclosures = createEvidenceDisclosureStore({ mode: 'disabled' })
 } = {}) {
-  if (!registry || typeof registry.readContent !== 'function' || typeof registry.get !== 'function') {
-    throw new TypeError('A time-attestation-aware evidence registry is required.');
+  if (!registry || typeof registry.readContent !== 'function' || typeof registry.get !== 'function'
+      || typeof registry.effectiveArchiveVerification !== 'function') {
+    throw new TypeError('A time-attestation-governance-aware evidence registry is required.');
   }
   if (!disclosures || typeof disclosures.request !== 'function') throw new TypeError('An evidence disclosure store is required.');
 
@@ -73,26 +74,11 @@ export function createEvidenceDisclosureRegistry({
   function revokeEvidenceDisclosure(tenantId, disclosureId, input = {}, context = {}) {
     return disclosures.revoke(tenantId, disclosureId, { actor: context.actor, reason: input.reason });
   }
-
-  function claimEvidenceDisclosures(bodyBytes, headers) {
-    return disclosures.claimSigned(bodyBytes, headers);
-  }
-
-  function acknowledgeEvidenceDisclosure(disclosureId, bodyBytes, headers) {
-    return disclosures.acknowledgeSigned(disclosureId, bodyBytes, headers);
-  }
-
-  function evidenceDisclosure(tenantId, disclosureId) {
-    return disclosures.get(tenantId, disclosureId);
-  }
-
-  function evidenceDisclosures(tenantId, options = {}) {
-    return disclosures.list(tenantId, options);
-  }
-
-  function evidenceDisclosureReport(tenantId) {
-    return disclosures.report(tenantId);
-  }
+  function claimEvidenceDisclosures(bodyBytes, headers) { return disclosures.claimSigned(bodyBytes, headers); }
+  function acknowledgeEvidenceDisclosure(disclosureId, bodyBytes, headers) { return disclosures.acknowledgeSigned(disclosureId, bodyBytes, headers); }
+  function evidenceDisclosure(tenantId, disclosureId) { return disclosures.get(tenantId, disclosureId); }
+  function evidenceDisclosures(tenantId, options = {}) { return disclosures.list(tenantId, options); }
+  function evidenceDisclosureReport(tenantId) { return disclosures.report(tenantId); }
 
   function verify(tenantId, evidenceId = null) {
     const base = registry.verify(tenantId, evidenceId);
@@ -132,39 +118,38 @@ export function createEvidenceDisclosureRegistry({
   function assertDisclosurePrerequisites(tenantId, item, version) {
     if (!registry.evidencePreservationEnabled) {
       throw new EvidenceDisclosurePrerequisiteError('Evidence disclosure requires immutable preservation.', {
-        evidenceId: item.evidenceId,
-        version: version.version,
-        prerequisite: 'preservation'
+        evidenceId: item.evidenceId, version: version.version, prerequisite: 'preservation'
       });
     }
     const receipt = registry.evidencePreservationStore.verifiedForVersion(
-      tenantId,
-      item.evidenceId,
-      version.version,
-      version.sha256,
-      item.retentionUntil
+      tenantId, item.evidenceId, version.version, version.sha256, item.retentionUntil
     );
     if (!receipt) {
       throw new EvidenceDisclosurePrerequisiteError('The evidence version must have a verified preservation receipt before disclosure.', {
-        evidenceId: item.evidenceId,
-        version: version.version,
-        prerequisite: 'preservation'
+        evidenceId: item.evidenceId, version: version.version, prerequisite: 'preservation'
       });
     }
-    if (registry.evidenceTimeAttestationEnabled) {
-      const quorum = registry.verifyEvidenceTimeAttestations(tenantId, receipt.archiveId);
-      if (!quorum.quorumSatisfied) {
-        throw new EvidenceDisclosurePrerequisiteError('The preservation receipt must satisfy independent time-attestation quorum before disclosure.', {
-          evidenceId: item.evidenceId,
-          version: version.version,
-          archiveId: receipt.archiveId,
-          prerequisite: 'time_attestation',
-          minimumProviders: quorum.minimumProviders,
-          distinctProviders: quorum.distinctProviders
-        });
-      }
+    if (!registry.evidenceTimeAttestationEnabled || !registry.evidenceTimeAttestationGovernanceEnabled) {
+      throw new EvidenceDisclosurePrerequisiteError('Evidence disclosure requires enabled independent time attestations and operational governance.', {
+        evidenceId: item.evidenceId,
+        version: version.version,
+        archiveId: receipt.archiveId,
+        prerequisite: 'time_attestation_governance'
+      });
     }
-    return receipt;
+    const verification = registry.effectiveArchiveVerification(tenantId, receipt.archiveId);
+    if (!verification.operationalQuorumSatisfied) {
+      throw new EvidenceDisclosurePrerequisiteError('The preservation receipt must satisfy operationally acceptable time-attestation quorum before disclosure.', {
+        evidenceId: item.evidenceId,
+        version: version.version,
+        archiveId: receipt.archiveId,
+        prerequisite: 'operational_time_attestation_quorum',
+        minimumProviders: verification.minimumProviders,
+        acceptableDistinctProviders: verification.acceptableDistinctProviders,
+        rejectedAttestations: verification.rejectedAttestations
+      });
+    }
+    return { receipt, verification };
   }
 
   return Object.freeze({
@@ -186,8 +171,12 @@ export function createEvidenceDisclosureRegistry({
 }
 
 export function createEvidenceDisclosureRegistryFromEnvironment(env = process.env) {
-  const registry = createEvidenceTimeAttestationRegistryFromEnvironment(env);
+  const registry = createEvidenceTimeAttestationGovernanceRegistryFromEnvironment(env);
   const disclosures = createEvidenceDisclosureStoreFromEnvironment({ env });
+  if (disclosures.enabled && (!registry.evidencePreservationEnabled
+      || !registry.evidenceTimeAttestationEnabled || !registry.evidenceTimeAttestationGovernanceEnabled)) {
+    throw new TypeError('Governed evidence disclosure requires preservation, time attestations and notary governance.');
+  }
   return createEvidenceDisclosureRegistry({ registry, disclosures });
 }
 
