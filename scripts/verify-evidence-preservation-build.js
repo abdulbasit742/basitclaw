@@ -40,6 +40,9 @@ await requireMarkers('src/evidence/evidencePreservationServer.js', 'Evidence pre
   'createExternalScanAwareApp', 'evidencePreservationHandler', 'resilienceScheduler'
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'Composed evidence runtime', [
+  'createEvidenceDisclosureAwareApp'
+]);
+await requireMarkers('src/evidence/evidenceDisclosureServer.js', 'Disclosure runtime composition', [
   'createEvidenceTimeAttestationAwareApp'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-attestation runtime composition', [
