@@ -79,8 +79,6 @@ export function createEvidenceTimeAttestationRequestHandler({
         } else return notFound(res, requestId);
       }
       const providerId = data.providerId ?? input.providerId;
-      const providerDecision = rateLimiter?.consume?.(`evidence-notary-request-provider:${providerId}`, 'write');
-      if (providerDecision) applyRateHeaders(res, rateLimiter, providerDecision);
       record(securityTelemetry, {
         type: url.pathname === CLAIM_ROUTE
           ? 'evidence_notary_request.claimed'
