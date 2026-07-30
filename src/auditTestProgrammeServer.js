@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { createEvidenceTimeAttestationAwareApp } from './evidence/evidenceTimeAttestationServer.js';
+import { createEvidenceTimeAttestationGovernanceAwareApp } from './evidence/evidenceTimeAttestationGovernanceServer.js';
 import { createAdaptiveRateLimiterFromEnvironment } from './security/rateLimiter.js';
 import { createAuditTestProgrammeHandler } from './auditTestProgrammeHandler.js';
 
 export function createAuditTestProgrammeAwareApp({
   env = process.env,
-  baseApp = createEvidenceTimeAttestationAwareApp({ env }),
+  baseApp = createEvidenceTimeAttestationGovernanceAwareApp({ env }),
   auditRegistry = baseApp.auditRegistry,
   rateLimiter = baseApp.apiSecurity?.rateLimiter ?? createAdaptiveRateLimiterFromEnvironment(env),
   securityTelemetry = baseApp.apiSecurity?.securityTelemetry,
@@ -18,7 +18,7 @@ export function createAuditTestProgrammeAwareApp({
   })
 } = {}) {
   const baseHandler = baseApp.listeners('request')[0];
-  if (typeof baseHandler !== 'function') throw new TypeError('The evidence time-attestation application must expose a request handler.');
+  if (typeof baseHandler !== 'function') throw new TypeError('The time-attestation governance application must expose a request handler.');
   if (!auditRegistry || typeof auditRegistry.forTenant !== 'function') throw new TypeError('The application must expose its workforce-audit registry.');
 
   const server = createServer(async (req, res) => {
@@ -68,6 +68,7 @@ export function createAuditTestProgrammeAwareApp({
   server.externalScanJobDeliveryHandler = baseApp.externalScanJobDeliveryHandler;
   server.evidencePreservationHandler = baseApp.evidencePreservationHandler;
   server.evidenceTimeAttestationHandler = baseApp.evidenceTimeAttestationHandler;
+  server.evidenceTimeAttestationGovernanceHandler = baseApp.evidenceTimeAttestationGovernanceHandler;
   server.auditTestProgrammeHandler = testProgrammeHandler;
   server.auditRegistry = auditRegistry;
   return server;
