@@ -19,6 +19,9 @@ jobs:
           node-version: '20'
           cache: npm
       - run: npm ci
-      - run: npm test
+      - name: Verify preservation regressions
+        run: timeout 60s node --test test/evidencePreservationStore.test.js
+      - name: Run full test suite
+        run: timeout 120s npm test
       - run: npm run lint
       - run: npm run build
