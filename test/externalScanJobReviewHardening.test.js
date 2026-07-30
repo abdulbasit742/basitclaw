@@ -20,15 +20,32 @@ const rsa = generateKeyPairSync('rsa', {
 
 async function listen(handler) {
   const server = createServer((req, res) => handler.handle(req, res));
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
   return { server, port: server.address().port };
+}
+
+async function closeServer(server) {
+  server.closeAllConnections?.();
+  await new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
 }
 
 function rawRequest(port, path, body = '{}') {
   return new Promise((resolve, reject) => {
     const req = httpRequest({
       host: '127.0.0.1', port, method: 'POST', path,
-      headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }
+      headers: {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+        connection: 'close'
+      }
     }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
@@ -53,7 +70,7 @@ test('malformed percent encoding in governance evidence IDs returns 400 instead 
   };
   const handler = createExternalScanJobGovernanceHandler({ registry, authenticationGateway });
   const { server, port } = await listen(handler);
-  t.after(() => server.close());
+  t.after(() => closeServer(server));
   const response = await rawRequest(port, '/api/workforce-audit/evidence/%E0%A4%A/external-scan-jobs');
   assert.equal(response.status, 400);
   assert.match(response.body.error, /invalid percent encoding/);
@@ -67,7 +84,7 @@ test('malformed percent encoding in scanner job IDs returns 400 instead of 500',
   };
   const handler = createExternalScanJobDeliveryHandler({ registry });
   const { server, port } = await listen(handler);
-  t.after(() => server.close());
+  t.after(() => closeServer(server));
   const response = await rawRequest(port, '/api/workforce-audit/external-scanner/jobs/%E0%A4%A/acknowledge');
   assert.equal(response.status, 400);
   assert.match(response.body.error, /invalid percent encoding/);
