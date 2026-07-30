@@ -18,6 +18,9 @@ export function createEvidenceTimeAttestationAwareApp({
     securityTelemetry
   })
 } = {}) {
+  if (evidenceRegistry.evidenceTimeAttestationEnabled && !evidenceRegistry.evidencePreservationEnabled) {
+    throw new TypeError('Evidence time attestations require enabled immutable evidence preservation.');
+  }
   const baseHandler = baseApp.listeners('request')[0];
   if (typeof baseHandler !== 'function') throw new TypeError('The preservation application must expose a request handler.');
 
