@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { createEvidenceAssuranceBundleAwareApp } from '../evidence/evidenceAssuranceBundleServer.js';
+import { createEvidenceAssuranceExportApprovalAwareApp } from '../evidence/evidenceAssuranceExportApprovalServer.js';
 import { createAdaptiveRateLimiterFromEnvironment } from '../security/rateLimiter.js';
 import { createRegulatoryCaseHandler } from './regulatoryCaseHandler.js';
 import { createRegulatoryCaseStoreFromEnvironment } from './regulatoryCaseStore.js';
 
 export function createRegulatoryCaseAwareApp({
   env = process.env,
-  baseApp = createEvidenceAssuranceBundleAwareApp({ env }),
+  baseApp = createEvidenceAssuranceExportApprovalAwareApp({ env }),
   rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
   regulatoryCaseStore = createRegulatoryCaseStoreFromEnvironment({ env, evidenceRegistry: baseApp.evidenceRegistry }),
   regulatoryAuthenticationGateway = createRegulatoryAuthenticationGateway(baseApp.authenticationGateway),
@@ -21,7 +21,7 @@ export function createRegulatoryCaseAwareApp({
 } = {}) {
   const baseHandler = baseApp.listeners('request')[0];
   if (typeof baseHandler !== 'function') {
-    throw new TypeError('The assurance-bundle application must expose a request handler.');
+    throw new TypeError('The assurance export approval application must expose a request handler.');
   }
   const server = createServer(async (req, res) => {
     const requestId = randomUUID();
@@ -63,7 +63,8 @@ export function createRegulatoryCaseAwareApp({
     'externalScanManagementHandler', 'externalScanJobGovernanceHandler',
     'externalScanJobDeliveryHandler', 'evidencePreservationHandler',
     'evidenceTimeAttestationHandler', 'evidenceTimeAttestationGovernanceHandler',
-    'evidenceAssuranceBundleHandler', 'auditRegistry'
+    'evidenceAssuranceBundleHandler', 'evidenceAssuranceExportApprovalHandler',
+    'auditRegistry'
   ]) server[property] = baseApp[property];
   server.evidenceRegistry = baseApp.evidenceRegistry;
   server.regulatoryAuthenticationGateway = regulatoryAuthenticationGateway;
