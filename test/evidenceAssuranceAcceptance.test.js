@@ -155,7 +155,7 @@ test('recipient verifies, accepts, and receives an Ed25519-signed acceptance rec
   assert.equal(accepted.bundle.state, 'delivered');
   assert.equal(accepted.bundle.acceptanceStatus, 'verified');
   assert.equal(accepted.acceptanceReceipt.verificationOutcome, 'verified');
-  assert.equal(verifyAssuranceAcceptanceReceipt(accepted.acceptanceReceipt, acceptance.publicKey).valid, true);
+  assert.equal(verifyAssuranceAcceptanceReceipt(accepted.acceptanceReceipt, acceptance.publicKey, tenantId).valid, true);
   assert.equal(store.verifyAcceptanceReceipt(tenantId, claimed.bundleId).valid, true);
   const listed = store.list(tenantId, { evidenceId });
   assert.equal(listed[0].acceptanceStatus, 'verified');
@@ -206,7 +206,7 @@ test('wrong recipient private keys and tampered acceptance receipts fail offline
   const request = signed(verified.acceptanceRequest, `acceptance:${claimed.bundleId}`, 'acceptance-submit-nonce-0004');
   const accepted = store.acceptAndAcknowledgeSigned(claimed.bundleId, request.bytes, request.headers);
   const tampered = { ...accepted.acceptanceReceipt, verifierVersion: 'tampered-verifier' };
-  assert.throws(() => verifyAssuranceAcceptanceReceipt(tampered, acceptance.publicKey));
+  assert.throws(() => verifyAssuranceAcceptanceReceipt(tampered, acceptance.publicKey, tenantId));
 });
 
 test('enabled acceptance configuration fails closed without dedicated keyrings', () => {
