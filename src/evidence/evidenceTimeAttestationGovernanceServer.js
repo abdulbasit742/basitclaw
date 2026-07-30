@@ -1,0 +1,71 @@
+import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
+import { createAdaptiveRateLimiterFromEnvironment } from '../security/rateLimiter.js';
+import { createEvidenceTimeAttestationAwareApp } from './evidenceTimeAttestationServer.js';
+import { createEvidenceTimeAttestationGovernanceHandler } from './evidenceTimeAttestationGovernanceHandler.js';
+import { createEvidenceTimeAttestationGovernanceRegistryFromEnvironment } from './evidenceTimeAttestationGovernanceRegistry.js';
+
+export function createEvidenceTimeAttestationGovernanceAwareApp({
+  env = process.env,
+  evidenceRegistry = createEvidenceTimeAttestationGovernanceRegistryFromEnvironment(env),
+  rateLimiter = createAdaptiveRateLimiterFromEnvironment(env),
+  baseApp = createEvidenceTimeAttestationAwareApp({ env, evidenceRegistry, rateLimiter }),
+  securityTelemetry = baseApp.apiSecurity?.securityTelemetry,
+  authenticationGateway = notaryGovernanceAuthenticationGateway(baseApp.authenticationGateway),
+  governanceHandler = createEvidenceTimeAttestationGovernanceHandler({ registry: evidenceRegistry, authenticationGateway, rateLimiter, securityTelemetry })
+} = {}) {
+  const baseHandler = baseApp.listeners('request')[0];
+  if (typeof baseHandler !== 'function') throw new TypeError('The time-attestation application must expose a request handler.');
+
+  const server = createServer(async (req, res) => {
+    const requestId = randomUUID();
+    try {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      if (governanceHandler.matches(url.pathname)) return await governanceHandler.handle(req, res, requestId);
+      return await baseHandler(req, res);
+    } catch (error) {
+      console.error('Unhandled time-attestation governance server error', { requestId, code: error?.code, error: error?.message });
+      if (!res.headersSent) {
+        res.writeHead(500, {
+          'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
+          'x-content-type-options': 'nosniff', 'x-request-id': requestId
+        });
+        return res.end(JSON.stringify({ success: false, error: 'Internal server error.', code: 'INTERNAL_ERROR', meta: { requestId } }));
+      }
+      res.destroy(error);
+    }
+  });
+
+  server.once('listening', () => baseApp.resilienceScheduler?.start?.());
+  server.once('close', () => baseApp.resilienceScheduler?.stop?.());
+  server.resilienceScheduler = baseApp.resilienceScheduler;
+  server.apiSecurity = baseApp.apiSecurity;
+  server.authenticationGateway = baseApp.authenticationGateway;
+  server.identityEntitlements = baseApp.identityEntitlements;
+  server.privilegedAccess = baseApp.privilegedAccess;
+  server.scimHandler = baseApp.scimHandler;
+  server.evidenceRegistry = evidenceRegistry;
+  server.evidenceHandler = baseApp.evidenceHandler;
+  server.evidenceReferenceMutex = baseApp.evidenceReferenceMutex;
+  server.externalScanCallbackHandler = baseApp.externalScanCallbackHandler;
+  server.externalScanManagementHandler = baseApp.externalScanManagementHandler;
+  server.externalScanJobGovernanceHandler = baseApp.externalScanJobGovernanceHandler;
+  server.externalScanJobDeliveryHandler = baseApp.externalScanJobDeliveryHandler;
+  server.evidencePreservationHandler = baseApp.evidencePreservationHandler;
+  server.evidenceTimeAttestationHandler = baseApp.evidenceTimeAttestationHandler;
+  server.evidenceTimeAttestationGovernanceHandler = governanceHandler;
+  server.auditRegistry = baseApp.auditRegistry;
+  return server;
+}
+
+function notaryGovernanceAuthenticationGateway(base) {
+  if (!base || typeof base.authenticate !== 'function' || typeof base.authorise !== 'function') throw new TypeError('A base authentication gateway is required.');
+  return Object.freeze({
+    ...base,
+    authenticate: base.authenticate.bind(base),
+    authorise(principal, permission) {
+      const mapped = permission === 'evidence:notary-govern' ? 'evidence:preserve' : permission;
+      return base.authorise(principal, mapped);
+    }
+  });
+}
