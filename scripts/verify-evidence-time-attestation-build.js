@@ -14,9 +14,7 @@ for (const file of requiredFiles) await access(new URL(`../${file}`, import.meta
 
 async function requireMarkers(path, label, markers) {
   const content = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
-  for (const marker of markers) {
-    if (!content.includes(marker)) throw new Error(`${label} build verification failed: missing ${marker}.`);
-  }
+  for (const marker of markers) if (!content.includes(marker)) throw new Error(`${label} build verification failed: missing ${marker}.`);
 }
 
 await requireMarkers('src/evidence/evidenceTimeAttestationStore.js', 'Time-attestation store', [
@@ -43,8 +41,11 @@ await requireMarkers('src/evidence/evidenceTimeAttestationHandler.js', 'Time-att
 await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-attestation server', [
   'createEvidencePreservationAwareApp', 'evidenceTimeAttestationHandler', 'resilienceScheduler'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Time-attestation runtime', [
+await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js', 'Time-attestation outer composition', [
   'createEvidenceTimeAttestationAwareApp'
+]);
+await requireMarkers('src/evidenceRuntime.js', 'Composed evidence runtime', [
+  'createEvidenceAssuranceBundleAwareApp'
 ]);
 await requireMarkers('test/evidenceTimeAttestationStore.test.js', 'Time-attestation safeguards', [
   'before resolving tenant or archive state',
@@ -65,5 +66,4 @@ await requireMarkers('config/evidence-screening.production.env.example', 'Produc
   'WORKFORCE_AUDIT_EVIDENCE_NOTARY_PROVIDERS=',
   'WORKFORCE_AUDIT_EVIDENCE_NOTARY_KEYS='
 ]);
-
 console.log('Independent evidence time-attestation build verification passed.');
