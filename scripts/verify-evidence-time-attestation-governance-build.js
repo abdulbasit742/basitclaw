@@ -49,7 +49,11 @@ await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceServer.js', 
   'resilienceScheduler'
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'Outermost evidence runtime', [
-  'createEvidenceTimeAttestationGovernanceAwareApp'
+  'createEvidenceTimeAttestationRequestAwareApp'
+]);
+await requireMarkers('src/evidence/evidenceTimeAttestationRequestServer.js', 'Notary request outer runtime', [
+  'createEvidenceTimeAttestationGovernanceAwareApp',
+  'evidenceTimeAttestationGovernanceHandler'
 ]);
 await requireMarkers('test/evidenceTimeAttestationGovernance.test.js', 'Notary governance regressions', [
   'prospective provider revocation preserves earlier proof',
