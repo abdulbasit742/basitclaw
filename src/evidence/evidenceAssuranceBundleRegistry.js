@@ -5,6 +5,7 @@ import {
   createEvidenceAssuranceBundleStore,
   createEvidenceAssuranceBundleStoreFromEnvironment
 } from './evidenceAssuranceBundleStore.js';
+import { createEvidenceAssuranceAcceptanceStoreFromEnvironment } from './evidenceAssuranceAcceptanceStore.js';
 
 const MANIFEST_FORMAT = 'basitclaw-assurance-bundle-manifest';
 
@@ -120,6 +121,20 @@ export function createEvidenceAssuranceBundleRegistry({
 
   function claimAssuranceBundles(body, headers) { return bundles.claimSigned(body, headers); }
   function acknowledgeAssuranceBundle(bundleId, body, headers) { return bundles.acknowledgeSigned(bundleId, body, headers); }
+  function acceptAssuranceBundle(bundleId, body, headers) {
+    if (typeof bundles.acceptAndAcknowledgeSigned !== 'function') throw new EvidenceConflictError('Verified assurance acceptance is disabled.');
+    return bundles.acceptAndAcknowledgeSigned(bundleId, body, headers);
+  }
+  function assuranceAcceptanceReceipts(tenantId, evidenceId = null, options = {}) {
+    if (evidenceId) registry.get(tenantId, evidenceId);
+    return typeof bundles.acceptanceReceipts === 'function'
+      ? bundles.acceptanceReceipts(tenantId, { evidenceId, ...options })
+      : [];
+  }
+  function verifyAssuranceAcceptanceReceipt(tenantId, bundleId) {
+    if (typeof bundles.verifyAcceptanceReceipt !== 'function') throw new EvidenceConflictError('Verified assurance acceptance is disabled.');
+    return bundles.verifyAcceptanceReceipt(tenantId, bundleId);
+  }
   function assuranceBundleStatus(tenantId) { return bundles.tenantStatus(tenantId); }
 
   function health() {
@@ -160,15 +175,20 @@ export function createEvidenceAssuranceBundleRegistry({
     assuranceBundles,
     claimAssuranceBundles,
     acknowledgeAssuranceBundle,
+    acceptAssuranceBundle,
+    assuranceAcceptanceReceipts,
+    verifyAssuranceAcceptanceReceipt,
     assuranceBundleStatus,
     assuranceBundleEnabled: bundles.enabled,
+    assuranceAcceptanceRequired: Boolean(bundles.verifiedAcceptanceRequired),
     assuranceBundleStore: bundles
   });
 }
 
 export function createEvidenceAssuranceBundleRegistryFromEnvironment(env = process.env) {
   const registry = createEvidenceTimeAttestationGovernanceRegistryFromEnvironment(env);
-  const bundles = createEvidenceAssuranceBundleStoreFromEnvironment({ env });
+  const baseBundles = createEvidenceAssuranceBundleStoreFromEnvironment({ env });
+  const bundles = createEvidenceAssuranceAcceptanceStoreFromEnvironment({ env, bundles: baseBundles });
   return createEvidenceAssuranceBundleRegistry({ registry, bundles });
 }
 
