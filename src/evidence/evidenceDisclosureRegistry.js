@@ -1,3 +1,4 @@
+import { sha256 } from './evidenceCrypto.js';
 import { EvidenceConflictError, EvidenceIntegrityError, EvidenceValidationError } from './evidenceRegistry.js';
 import { createEvidenceTimeAttestationRegistryFromEnvironment } from './evidenceTimeAttestationRegistry.js';
 import {
@@ -47,7 +48,7 @@ export function createEvidenceDisclosureRegistry({
     const payload = {
       format: 'basitclaw-evidence-disclosure-payload-v1',
       version: 1,
-      tenantScope: tenantScopeDigest(tenantId),
+      tenantScope: `tenant-sha256:${sha256(String(tenantId))}`,
       purpose: request.purpose,
       generatedFor: request.recipientKeyId,
       evidence: selected
@@ -133,6 +134,8 @@ export function createEvidenceDisclosureRegistry({
   function verifyEvidenceDisclosure(tenantId, packageId) { return disclosures.verify(tenantId, packageId); }
   function revokeEvidenceDisclosure(tenantId, packageId, input = {}, context = {}) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new EvidenceValidationError('A valid disclosure revocation request is required.');
+    const allowed = new Set(['confirmation', 'reason']);
+    for (const key of Object.keys(input)) if (!allowed.has(key)) throw new EvidenceValidationError(`Disclosure revocation contains unsupported field ${key}.`, { field: key });
     const confirmation = `REVOKE DISCLOSURE ${packageId}`;
     if (input.confirmation !== confirmation) {
       throw new EvidenceValidationError(`confirmation must be exactly ${confirmation}.`, { field: 'confirmation' });
@@ -194,7 +197,7 @@ function validateRequest(input) {
   return {
     recipientKeyId: identifier(input.recipientKeyId, 'recipientKeyId'),
     recipientPublicKeyPem: cleanText(input.recipientPublicKeyPem, 'recipientPublicKeyPem', 100, 20_000),
-    expiresAt: isoDate(input.expiresAt, 'expiresAt'),
+    expiresAt: futureDate(input.expiresAt, 'expiresAt'),
     maximumDownloads: integer(input.maximumDownloads ?? 1, 'maximumDownloads', 1, 1000),
     purpose: cleanText(input.purpose, 'purpose', 10, 500),
     confirmation: String(input.confirmation ?? ''),
@@ -210,18 +213,10 @@ function validateRequest(input) {
   };
 }
 
-function tenantScopeDigest(tenantId) {
-  // The package proves a consistent tenant scope without disclosing the internal tenant identifier.
-  return `tenant-sha256:${sha256Text(tenantId)}`;
-}
-function sha256Text(value) {
-  // Avoid importing package crypto details into the public registry contract.
-  return globalThis.Buffer.from(String(value)).toString('base64url').slice(0, 43);
-}
 function evidenceIdentifier(value) { const id = String(value ?? ''); if (!/^EVD-[a-f0-9]{32}$/.test(id)) throw new EvidenceValidationError('evidenceId is invalid.', { field: 'evidenceId' }); return id; }
 function identifier(value, field) { const text = String(value ?? '').trim(); if (!/^[a-zA-Z0-9][a-zA-Z0-9._:@/-]{1,191}$/.test(text)) throw new EvidenceValidationError(`${field} is invalid.`, { field }); return text; }
 function cleanText(value, field, minimum, maximum) { const text = String(value ?? '').trim(); if (text.length < minimum || text.length > maximum) throw new EvidenceValidationError(`${field} must contain ${minimum} to ${maximum} characters.`, { field }); return text; }
-function isoDate(value, field) { const date = new Date(String(value ?? '')); if (Number.isNaN(date.getTime())) throw new EvidenceValidationError(`${field} must be a valid ISO date.`, { field }); if (date <= new Date()) throw new EvidenceValidationError(`${field} must be in the future.`, { field }); return date.toISOString(); }
+function futureDate(value, field) { const date = new Date(String(value ?? '')); if (Number.isNaN(date.getTime())) throw new EvidenceValidationError(`${field} must be a valid ISO date.`, { field }); if (date <= new Date()) throw new EvidenceValidationError(`${field} must be in the future.`, { field }); return date.toISOString(); }
 function integer(value, field, minimum, maximum) { const parsed = Number(value); if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw new EvidenceValidationError(`${field} must be an integer from ${minimum} to ${maximum}.`, { field }); return parsed; }
 function parseBoolean(value) { if (typeof value === 'boolean') return value; if (value === 'true') return true; if (value === 'false') return false; throw new TypeError('Boolean environment value must be true or false.'); }
 function envValue(value) { const clean = typeof value === 'string' ? value.trim() : value; return clean === '' || clean === undefined || clean === null ? undefined : clean; }
