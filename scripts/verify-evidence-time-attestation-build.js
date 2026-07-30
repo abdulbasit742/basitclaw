@@ -46,7 +46,10 @@ await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-atte
   'createEvidencePreservationAwareApp', 'evidenceTimeAttestationHandler', 'resilienceScheduler',
   'require enabled immutable evidence preservation'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Time-attestation runtime', [
+await requireMarkers('src/evidenceRuntime.js', 'Composed time-attestation runtime', [
+  'createEvidenceDisclosurePackageAwareApp'
+]);
+await requireMarkers('src/evidence/evidenceDisclosurePackageServer.js', 'Time-attestation runtime delegation', [
   'createEvidenceTimeAttestationAwareApp'
 ]);
 await requireMarkers('test/evidenceTimeAttestationStore.test.js', 'Time-attestation safeguards', [
