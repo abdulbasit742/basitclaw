@@ -32,6 +32,7 @@ const RECEIPT_FORMAT = 'basitclaw-evidence-preservation-receipt';
 const ARCHIVE_ID = /^ARC-[a-f0-9]{32}$/;
 const EVIDENCE_ID = /^EVD-[a-f0-9]{32}$/;
 const HASH = /^[a-f0-9]{64}$/;
+const RECEIPT_FILE = /^(\d{13})-(ARC-[a-f0-9]{32})\.receipt$/;
 const MODES = new Set(['disabled', 'shared-file']);
 
 export class EvidencePreservationStoreError extends EvidenceStoreError {
@@ -96,25 +97,25 @@ export function createEvidencePreservationStore({
     const archivedBy = identifier(actor, 'actor');
     const archivePurpose = cleanText(purpose, 'purpose', 10, 500);
     const archiveId = archiveIdFor(source);
-    const paths = archivePaths(source.tenantId, archiveId);
 
     return lock.withLock(`evidence-preservation:${source.tenantId}`, () => {
-      const objectExists = existsSync(paths.object);
-      const receiptExists = existsSync(paths.receipt);
-      if (receiptExists && !objectExists) {
-        throw new EvidencePreservationIntegrityError('A preservation receipt exists without its immutable object.', { archiveId });
-      }
-      if (objectExists) {
-        const object = readObject(paths.object, source.tenantId, archiveId);
+      const objectPath = archiveObjectPath(source.tenantId, archiveId);
+      if (existsSync(objectPath)) {
+        const object = readObject(objectPath, source.tenantId, archiveId);
         assertObjectMatches(object, source);
-        if (!receiptExists) {
-          const receipt = makeReceipt(object, paths.object);
-          writeRecord(paths.receipt, receipt, receiptAad(source.tenantId, archiveId));
+        const receiptPath = receiptPathForObject(source.tenantId, object);
+        if (!existsSync(receiptPath)) {
+          const receipt = makeReceipt(object, objectPath);
+          writeRecord(receiptPath, receipt, receiptAad(source.tenantId, archiveId));
           return { archived: true, duplicate: false, recoveredReceipt: true, receipt: publicReceipt(receipt) };
         }
         const verified = verifyLocked(source.tenantId, archiveId);
         assertReceiptMatches(verified.receipt, source);
         return { archived: false, duplicate: true, recoveredReceipt: false, receipt: verified.receipt };
+      }
+
+      if (findReceiptRefByArchiveId(source.tenantId, archiveId)) {
+        throw new EvidencePreservationIntegrityError('A preservation receipt exists without its immutable object.', { archiveId });
       }
 
       const object = {
@@ -135,10 +136,10 @@ export function createEvidencePreservationStore({
         purpose: archivePurpose,
         contentBase64: source.content.toString('base64')
       };
-      writeRecord(paths.object, object, objectAad(source.tenantId, archiveId));
-      const receipt = makeReceipt(object, paths.object);
+      writeRecord(objectPath, object, objectAad(source.tenantId, archiveId));
+      const receipt = makeReceipt(object, objectPath);
       try {
-        writeRecord(paths.receipt, receipt, receiptAad(source.tenantId, archiveId));
+        writeRecord(receiptPathForObject(source.tenantId, object), receipt, receiptAad(source.tenantId, archiveId));
       } catch (error) {
         throw storeFailure(error, 'write_receipt', archiveId);
       }
@@ -149,14 +150,13 @@ export function createEvidencePreservationStore({
   function list(tenantId, { evidenceId = null, limit = 500 } = {}) {
     const tenant = identifier(tenantId, 'tenantId');
     const evidence = evidenceId === null ? null : evidenceIdentifier(evidenceId);
+    const safeLimit = integer(limit, 'limit', 1, 100_000);
     return lock.withLock(`evidence-preservation:${tenant}`, () => {
-      const paths = tenantPaths(tenant);
-      return names(paths.receipts, '.receipt')
-        .map((filename) => readReceipt(resolve(paths.receipts, filename), tenant, filename.slice(0, -8)))
-        .filter((receipt) => !evidence || receipt.evidenceId === evidence)
-        .sort((left, right) => right.archivedAt.localeCompare(left.archivedAt))
-        .slice(0, integer(limit, 'limit', 1, 5000))
-        .map(publicReceipt);
+      const refs = evidence ? receiptRefsForEvidence(tenant, evidence) : receiptRefsForTenant(tenant);
+      return refs
+        .sort((left, right) => right.timestamp - left.timestamp || right.archiveId.localeCompare(left.archiveId))
+        .slice(0, safeLimit)
+        .map((ref) => publicReceipt(readReceiptRef(ref, tenant, evidence)));
     });
   }
 
@@ -167,13 +167,18 @@ export function createEvidencePreservationStore({
   }
 
   function verifyLocked(tenant, archiveId) {
-    const paths = archivePaths(tenant, archiveId);
-    if (!existsSync(paths.object) || !existsSync(paths.receipt)) {
+    const objectPath = archiveObjectPath(tenant, archiveId);
+    if (!existsSync(objectPath)) {
       throw new EvidencePreservationIntegrityError('The preservation object or receipt is missing.', { archiveId });
     }
-    const object = readObject(paths.object, tenant, archiveId);
-    const receipt = readReceipt(paths.receipt, tenant, archiveId);
-    const objectEnvelopeSha256 = envelopeHash(paths.object);
+    const object = readObject(objectPath, tenant, archiveId);
+    const receiptPath = receiptPathForObject(tenant, object);
+    if (!existsSync(receiptPath)) {
+      throw new EvidencePreservationIntegrityError('The preservation object or receipt is missing.', { archiveId });
+    }
+    const receipt = readReceipt(receiptPath, tenant, archiveId);
+    assertReceiptFilename(receiptPath, receipt);
+    const objectEnvelopeSha256 = envelopeHash(objectPath);
     if (receipt.objectEnvelopeSha256 !== objectEnvelopeSha256
         || receipt.evidenceId !== object.evidenceId
         || receipt.evidenceVersion !== object.evidenceVersion
@@ -190,7 +195,7 @@ export function createEvidencePreservationStore({
       object: {
         contentSha256: object.contentSha256,
         sizeBytes: object.sizeBytes,
-        encryptionKeyId: readEvidenceJson(paths.object).keyId
+        encryptionKeyId: readEvidenceJson(objectPath).keyId
       }
     };
   }
@@ -198,18 +203,28 @@ export function createEvidencePreservationStore({
   function verifyTenant(tenantId) {
     const tenant = identifier(tenantId, 'tenantId');
     return lock.withLock(`evidence-preservation:${tenant}`, () => {
-      const paths = tenantPaths(tenant);
-      let checkedArchives = 0;
-      for (const filename of names(paths.receipts, '.receipt')) {
-        verifyLocked(tenant, filename.slice(0, -8));
-        checkedArchives += 1;
+      const objectIds = new Set(objectArchiveIds(tenant));
+      const receiptRefs = receiptRefsForTenant(tenant);
+      const receiptIds = new Set(receiptRefs.map((ref) => ref.archiveId));
+      const orphanObjects = [...objectIds].filter((archiveId) => !receiptIds.has(archiveId));
+      const orphanReceipts = [...receiptIds].filter((archiveId) => !objectIds.has(archiveId));
+      const duplicateReceipts = receiptRefs.length - receiptIds.size;
+      if (orphanObjects.length || orphanReceipts.length || duplicateReceipts) {
+        throw new EvidencePreservationIntegrityError('The preservation object and receipt sets are inconsistent.', {
+          orphanObjects: orphanObjects.length,
+          orphanReceipts: orphanReceipts.length,
+          duplicateReceipts
+        });
       }
-      const orphanObjects = names(paths.objects, '.object')
-        .filter((filename) => !existsSync(resolve(paths.receipts, `${filename.slice(0, -7)}.receipt`))).length;
-      if (orphanObjects) {
-        throw new EvidencePreservationIntegrityError('One or more preservation objects have no receipt.', { orphanObjects });
-      }
-      return { valid: true, tenantId: tenant, checkedArchives, orphanObjects: 0 };
+      for (const archiveId of objectIds) verifyLocked(tenant, archiveId);
+      return {
+        valid: true,
+        tenantId: tenant,
+        checkedArchives: objectIds.size,
+        orphanObjects: 0,
+        orphanReceipts: 0,
+        duplicateReceipts: 0
+      };
     });
   }
 
@@ -218,30 +233,45 @@ export function createEvidencePreservationStore({
     const evidence = evidenceIdentifier(evidenceId);
     const evidenceVersion = integer(version, 'version', 1, 1_000_000);
     const digest = hashValue(contentSha256, 'contentSha256');
-    const minimumRetention = isoDate(minimumRetentionUntil, 'minimumRetentionUntil');
-    for (const receipt of list(tenant, { evidenceId: evidence, limit: 5000 })) {
-      if (receipt.evidenceVersion !== evidenceVersion || receipt.contentSha256 !== digest) continue;
-      if (new Date(receipt.retentionUntil) < new Date(minimumRetention)) continue;
-      verify(tenant, receipt.archiveId);
+    const retentionUntil = isoDate(minimumRetentionUntil, 'minimumRetentionUntil');
+    const archiveId = archiveIdFor({
+      tenantId: tenant,
+      evidenceId: evidence,
+      version: evidenceVersion,
+      contentSha256: digest,
+      retentionUntil
+    });
+    return lock.withLock(`evidence-preservation:${tenant}`, () => {
+      if (!existsSync(archiveObjectPath(tenant, archiveId))) return null;
+      const verified = verifyLocked(tenant, archiveId);
+      const receipt = verified.receipt;
+      if (receipt.evidenceId !== evidence
+          || receipt.evidenceVersion !== evidenceVersion
+          || receipt.contentSha256 !== digest
+          || receipt.retentionUntil !== retentionUntil) return null;
       return receipt;
-    }
-    return null;
+    });
   }
 
   function tenantStatus(tenantId) {
     const tenant = identifier(tenantId, 'tenantId');
     try {
-      const paths = tenantPaths(tenant);
-      const archives = names(paths.receipts, '.receipt').length;
-      const objects = names(paths.objects, '.object').length;
-      const orphanObjects = Math.max(0, objects - archives);
+      const objectIds = new Set(objectArchiveIds(tenant));
+      const receiptRefs = receiptRefsForTenant(tenant);
+      const receiptIds = new Set(receiptRefs.map((ref) => ref.archiveId));
+      const orphanObjects = [...objectIds].filter((archiveId) => !receiptIds.has(archiveId)).length;
+      const orphanReceipts = [...receiptIds].filter((archiveId) => !objectIds.has(archiveId)).length;
+      const duplicateReceipts = receiptRefs.length - receiptIds.size;
+      const unavailable = orphanObjects || orphanReceipts || duplicateReceipts;
       return {
-        status: orphanObjects ? 'unavailable' : backendConfirmed ? 'ready' : 'attention',
+        status: unavailable ? 'unavailable' : backendConfirmed ? 'ready' : 'attention',
         enabled: true,
         requiredForDisposition: required,
         immutableBackendConfirmed: backendConfirmed,
-        archives,
-        orphanObjects
+        archives: receiptIds.size,
+        orphanObjects,
+        orphanReceipts,
+        duplicateReceipts
       };
     } catch (error) {
       return {
@@ -266,6 +296,7 @@ export function createEvidencePreservationStore({
         mode: 'shared-file-write-once-preservation',
         durable: true,
         encrypted: true,
+        independentEncryptionKeys: true,
         signedReceipts: true,
         createOnly: true,
         deletionApi: false,
@@ -295,7 +326,8 @@ export function createEvidencePreservationStore({
     const object = readRecord(path, objectAad(tenant, archiveId), archiveId, 'object');
     if (!object || object.format !== OBJECT_FORMAT || object.version !== 1
         || object.archiveId !== archiveId || object.tenantId !== tenant
-        || !EVIDENCE_ID.test(object.evidenceId) || !HASH.test(object.contentSha256)) {
+        || !EVIDENCE_ID.test(object.evidenceId) || !HASH.test(object.contentSha256)
+        || !Number.isFinite(Date.parse(object.archivedAt))) {
       throw new EvidencePreservationIntegrityError('A preservation object has an invalid identity.', { archiveId });
     }
     let content;
@@ -310,10 +342,24 @@ export function createEvidencePreservationStore({
   function readReceipt(path, tenant, archiveId) {
     const receipt = readRecord(path, receiptAad(tenant, archiveId), archiveId, 'receipt');
     if (!receipt || receipt.format !== RECEIPT_FORMAT || receipt.version !== 1
-        || receipt.archiveId !== archiveId || receipt.tenantId !== tenant) {
+        || receipt.archiveId !== archiveId || receipt.tenantId !== tenant
+        || !EVIDENCE_ID.test(receipt.evidenceId) || !Number.isFinite(Date.parse(receipt.archivedAt))) {
       throw new EvidencePreservationIntegrityError('A preservation receipt has an invalid identity.', { archiveId });
     }
     verifySignature(receipt, signing);
+    return receipt;
+  }
+
+  function readReceiptRef(ref, tenant, expectedEvidenceId = null) {
+    const receipt = readReceipt(ref.path, tenant, ref.archiveId);
+    assertReceiptFilename(ref.path, receipt);
+    if (expectedEvidenceId && receipt.evidenceId !== expectedEvidenceId) {
+      throw new EvidencePreservationIntegrityError('A preservation receipt is stored under the wrong evidence index.', { archiveId: ref.archiveId });
+    }
+    const expectedDirectory = sha256(receipt.evidenceId);
+    if (ref.evidenceHash !== expectedDirectory) {
+      throw new EvidencePreservationIntegrityError('A preservation receipt evidence index is invalid.', { archiveId: ref.archiveId });
+    }
     return receipt;
   }
 
@@ -346,12 +392,14 @@ export function createEvidencePreservationStore({
     return signReceipt(body, signing);
   }
 
-  function archivePaths(tenant, archiveId) {
-    const paths = tenantPaths(tenant);
-    return {
-      object: resolve(paths.objects, `${archiveId}.object`),
-      receipt: resolve(paths.receipts, `${archiveId}.receipt`)
-    };
+  function archiveObjectPath(tenant, archiveId) {
+    return resolve(tenantPaths(tenant).objects, `${archiveId}.object`);
+  }
+
+  function receiptPathForObject(tenant, object) {
+    const directory = receiptEvidenceDirectory(tenant, object.evidenceId);
+    const timestamp = String(Date.parse(object.archivedAt)).padStart(13, '0');
+    return resolve(directory, `${timestamp}-${object.archiveId}.receipt`);
   }
 
   function tenantPaths(tenant) {
@@ -361,6 +409,53 @@ export function createEvidencePreservationStore({
     mkdirSync(objects, { recursive: true, mode: 0o700 });
     mkdirSync(receipts, { recursive: true, mode: 0o700 });
     return { objects, receipts };
+  }
+
+  function receiptEvidenceDirectory(tenant, evidenceId) {
+    const directory = resolve(tenantPaths(tenant).receipts, sha256(evidenceId));
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    return directory;
+  }
+
+  function receiptRefsForEvidence(tenant, evidenceId) {
+    const evidenceHash = sha256(evidenceId);
+    const directory = resolve(tenantPaths(tenant).receipts, evidenceHash);
+    if (!existsSync(directory)) return [];
+    return receiptRefsInDirectory(directory, evidenceHash);
+  }
+
+  function receiptRefsForTenant(tenant) {
+    const receiptsRoot = tenantPaths(tenant).receipts;
+    const refs = [];
+    for (const entry of readdirSync(receiptsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !HASH.test(entry.name)) continue;
+      refs.push(...receiptRefsInDirectory(resolve(receiptsRoot, entry.name), entry.name));
+    }
+    return refs;
+  }
+
+  function receiptRefsInDirectory(directory, evidenceHash) {
+    return readdirSync(directory)
+      .map((filename) => {
+        const match = filename.match(RECEIPT_FILE);
+        return match ? {
+          timestamp: Number(match[1]),
+          archiveId: match[2],
+          evidenceHash,
+          path: resolve(directory, filename)
+        } : null;
+      })
+      .filter(Boolean);
+  }
+
+  function findReceiptRefByArchiveId(tenant, archiveId) {
+    return receiptRefsForTenant(tenant).find((ref) => ref.archiveId === archiveId) ?? null;
+  }
+
+  function objectArchiveIds(tenant) {
+    return readdirSync(tenantPaths(tenant).objects)
+      .filter((filename) => filename.endsWith('.object') && ARCHIVE_ID.test(filename.slice(0, -7)))
+      .map((filename) => filename.slice(0, -7));
   }
 
   return Object.freeze({
@@ -386,20 +481,36 @@ export function createEvidencePreservationStoreFromEnvironment({ env = process.e
   if (!evidenceRegistry?.enabled || !evidenceRegistry.directory) {
     throw new EvidencePreservationStoreError('Evidence preservation requires enabled evidence custody.');
   }
+
+  const rawEncryptionKeys = environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_KEYS);
+  const encryptionPrimaryKeyId = environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_PRIMARY_KEY_ID);
+  const rawSigningSecrets = environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_SIGNING_SECRETS);
+  const signingPrimaryKeyId = environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_PRIMARY_SIGNING_KEY_ID);
+  if (!rawEncryptionKeys) {
+    throw new EvidencePreservationStoreError('Dedicated evidence preservation encryption keys are required.', { reason: 'missing_preservation_encryption_keys' });
+  }
+  if (!encryptionPrimaryKeyId) {
+    throw new EvidencePreservationStoreError('An evidence preservation primary encryption key ID is required.', { reason: 'missing_preservation_primary_key_id' });
+  }
+  if (!rawSigningSecrets) {
+    throw new EvidencePreservationStoreError('Evidence preservation signing secrets are required.', { reason: 'missing_preservation_signing_secrets' });
+  }
+  if (!signingPrimaryKeyId) {
+    throw new EvidencePreservationStoreError('An evidence preservation primary signing key ID is required.', { reason: 'missing_preservation_primary_signing_key_id' });
+  }
+
   try {
-    const encryptionKeys = JSON.parse(environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_KEYS)
-      ?? environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_KEYS));
-    const signingSecrets = JSON.parse(environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_SIGNING_SECRETS));
+    const encryptionKeys = JSON.parse(rawEncryptionKeys);
+    const signingSecrets = JSON.parse(rawSigningSecrets);
     return createEvidencePreservationStore({
       mode,
       requiredForDisposition,
       directory: environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_DIR)
         ?? resolve(evidenceRegistry.directory, '.preservation'),
       encryptionKeys,
-      encryptionPrimaryKeyId: environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_PRIMARY_KEY_ID)
-        ?? environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_PRIMARY_KEY_ID),
+      encryptionPrimaryKeyId,
       signingSecrets,
-      signingPrimaryKeyId: environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_PRIMARY_SIGNING_KEY_ID),
+      signingPrimaryKeyId,
       immutableBackendConfirmed: parseBoolean(environmentValue(env.WORKFORCE_AUDIT_EVIDENCE_PRESERVATION_IMMUTABLE_BACKEND_CONFIRMED) ?? false)
     });
   } catch (error) {
@@ -446,6 +557,14 @@ function assertReceiptMatches(receipt, input) {
       || receipt.contentSha256 !== input.contentSha256 || receipt.sizeBytes !== input.sizeBytes
       || receipt.retentionUntil !== input.retentionUntil) {
     throw new EvidencePreservationIntegrityError('An existing preservation receipt conflicts with the requested immutable version.', { archiveId: receipt.archiveId });
+  }
+}
+
+function assertReceiptFilename(path, receipt) {
+  const filename = path.split('/').at(-1);
+  const match = filename?.match(RECEIPT_FILE);
+  if (!match || match[2] !== receipt.archiveId || Number(match[1]) !== Date.parse(receipt.archivedAt)) {
+    throw new EvidencePreservationIntegrityError('The preservation receipt filename is inconsistent with its signed metadata.', { archiveId: receipt.archiveId });
   }
 }
 
@@ -516,17 +635,21 @@ function publicReceipt(receipt) {
 function writeJsonExclusive(path, value, archiveId) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   let descriptor = null;
+  let created = false;
+  let committed = false;
   try {
     descriptor = openSync(path, 'wx', 0o600);
+    created = true;
     writeFileSync(descriptor, `${JSON.stringify(value)}\n`, 'utf8');
     fsyncSync(descriptor);
     closeSync(descriptor);
     descriptor = null;
+    committed = true;
     const directory = openSync(dirname(path), 'r');
     try { fsyncSync(directory); } finally { closeSync(directory); }
   } catch (error) {
     if (descriptor !== null) try { closeSync(descriptor); } catch {}
-    if (error?.code !== 'EEXIST') try { rmSync(path, { force: true }); } catch {}
+    if (created && !committed) try { rmSync(path, { force: true }); } catch {}
     if (error?.code === 'EEXIST') {
       throw new EvidencePreservationIntegrityError('A conflicting write-once preservation record already exists.', { archiveId });
     }
@@ -539,9 +662,6 @@ function envelopeHash(path) {
   catch (error) { throw new EvidencePreservationStoreError('A preservation envelope cannot be canonicalised.', {}, error); }
 }
 
-function names(directory, suffix) {
-  return readdirSync(directory).filter((name) => ARCHIVE_ID.test(name.slice(0, -suffix.length)) && name.endsWith(suffix)).sort();
-}
 function objectAad(tenantId, archiveId) { return `basitclaw:evidence-preservation:object:${tenantId}:${archiveId}`; }
 function receiptAad(tenantId, archiveId) { return `basitclaw:evidence-preservation:receipt:${tenantId}:${archiveId}`; }
 function archiveIdentifier(value) { const id = String(value ?? ''); if (!ARCHIVE_ID.test(id)) throw new EvidenceValidationError('archiveId is invalid.', { field: 'archiveId' }); return id; }
@@ -567,7 +687,7 @@ function disabledStore() {
     preserve() { throw new EvidenceConflictError('Evidence preservation is disabled.'); },
     list() { return []; },
     verify() { throw new EvidenceConflictError('Evidence preservation is disabled.'); },
-    verifyTenant(tenantId) { return { valid: true, tenantId, checkedArchives: 0, orphanObjects: 0 }; },
+    verifyTenant(tenantId) { return { valid: true, tenantId, checkedArchives: 0, orphanObjects: 0, orphanReceipts: 0, duplicateReceipts: 0 }; },
     verifiedForVersion() { return null; },
     tenantStatus() { return status; },
     health() { return status; }
