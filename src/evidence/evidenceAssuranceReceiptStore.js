@@ -7,6 +7,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  rmSync,
   writeFileSync
 } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -88,8 +89,7 @@ export function createEvidenceAssuranceReceiptStore({
 
   function verifyAndRecord(input) {
     const source = validateInput(input);
-    const key = recipientKeys.get(source.recipientId)?.get(source.keyId);
-    if (!key) throw new EvidenceAssuranceReceiptSignatureError(undefined, { reason: 'unknown_receipt_key' });
+    verifyIncomingSignature(source);
     const receiptTime = new Date(source.receivedAt);
     const current = now();
     if (receiptTime.getTime() > current.getTime() + skewMs
@@ -98,23 +98,6 @@ export function createEvidenceAssuranceReceiptStore({
         reason: 'receipt_time_window'
       });
     }
-    const canonical = receiptCanonical(source);
-    const supplied = signatureBytes(source.signature);
-    let valid = false;
-    try {
-      valid = key.algorithm === 'ed25519'
-        ? verify(null, Buffer.from(canonical), key.publicKey, supplied)
-        : verify('sha256', Buffer.from(canonical), {
-          key: key.publicKey,
-          padding: constants.RSA_PKCS1_PSS_PADDING,
-          saltLength: constants.RSA_PSS_SALTLEN_DIGEST
-        }, supplied);
-    } catch (error) {
-      throw new EvidenceAssuranceReceiptSignatureError('The receipt signature could not be verified.', {
-        reason: 'signature_malformed'
-      }, error);
-    }
-    if (!valid) throw new EvidenceAssuranceReceiptSignatureError(undefined, { reason: 'signature_mismatch' });
 
     return lock.withLock(`assurance-receipts:${source.tenantId}`, () => {
       const index = loadIndex(source.tenantId);
@@ -129,15 +112,18 @@ export function createEvidenceAssuranceReceiptStore({
           maximumRecords: maximum
         });
       }
+      const canonical = receiptCanonical(source);
       const receiptId = `ADR-${sha256(canonical).slice(0, 32)}`;
       const path = receiptPath(source.tenantId, receiptId);
       if (existsSync(path)) {
         const record = readRecord(source.tenantId, receiptId);
         assertSameReceipt(record, source);
+        assertRecoveryPosition(index, record);
         appendIndex(index, record);
         saveIndex(source.tenantId, index);
         return { duplicate: false, recoveredIndex: true, receipt: publicReceipt(record) };
       }
+      const key = recipientKeys.get(source.recipientId).get(source.keyId);
       const previousHash = index.chainHead;
       const body = {
         format: RECORD_FORMAT,
@@ -220,12 +206,49 @@ export function createEvidenceAssuranceReceiptStore({
         status: 'ready', enabled: true, required: isRequired,
         mode: 'encrypted-recipient-signed-delivery-receipts',
         appendOnly: true, encrypted: true, hashChained: true,
+        historicalSignaturesReverified: true,
         recipientCount: recipientKeys.size, maximumRecords: maximum,
         mutex: lock.health()
       };
     } catch (error) {
       return { status: 'unavailable', enabled: true, required: isRequired, error: error?.code ?? 'assurance_receipt_store_unavailable' };
     }
+  }
+
+  function verifyIncomingSignature(source) {
+    const key = recipientKeys.get(source.recipientId)?.get(source.keyId);
+    if (!key) throw new EvidenceAssuranceReceiptSignatureError(undefined, { reason: 'unknown_receipt_key' });
+    const supplied = signatureBytes(source.signature);
+    let valid = false;
+    try { valid = verifySignature(receiptCanonical(source), supplied, key); }
+    catch { throw new EvidenceAssuranceReceiptSignatureError('The receipt signature could not be verified.', { reason: 'signature_malformed' }); }
+    if (!valid) throw new EvidenceAssuranceReceiptSignatureError(undefined, { reason: 'signature_mismatch' });
+  }
+  function assertStoredSignature(record) {
+    const key = recipientKeys.get(record.recipientId)?.get(record.keyId);
+    if (!key || key.algorithm !== record.algorithm || key.fingerprint !== record.publicKeyFingerprint) {
+      throw new EvidenceAssuranceReceiptIntegrityError('The assurance receipt references an unavailable or changed verification key.', {
+        receiptId: record.receiptId,
+        recipientId: record.recipientId,
+        keyId: record.keyId
+      });
+    }
+    let supplied;
+    try { supplied = strictBase64(record.signature, 'delivery receipt signature'); }
+    catch (error) { throw new EvidenceAssuranceReceiptIntegrityError('The stored assurance receipt signature is malformed.', { receiptId: record.receiptId }, error); }
+    let valid = false;
+    try { valid = verifySignature(receiptCanonical(record), supplied, key); }
+    catch (error) { throw new EvidenceAssuranceReceiptIntegrityError('The stored assurance receipt signature could not be verified.', { receiptId: record.receiptId }, error); }
+    if (!valid) throw new EvidenceAssuranceReceiptIntegrityError('The stored assurance receipt signature verification failed.', { receiptId: record.receiptId });
+  }
+  function verifySignature(canonical, supplied, key) {
+    return key.algorithm === 'ed25519'
+      ? verify(null, Buffer.from(canonical), key.publicKey, supplied)
+      : verify('sha256', Buffer.from(canonical), {
+        key: key.publicKey,
+        padding: constants.RSA_PKCS1_PSS_PADDING,
+        saltLength: constants.RSA_PSS_SALTLEN_DIGEST
+      }, supplied);
   }
 
   function loadIndex(tenant) {
@@ -255,6 +278,15 @@ export function createEvidenceAssuranceReceiptStore({
     });
     index.chainHead = record.recordHash;
   }
+  function assertRecoveryPosition(index, record) {
+    if (record.previousHash !== index.chainHead || record.sequence !== index.receipts.length + 1) {
+      throw new EvidenceAssuranceReceiptIntegrityError('An unindexed assurance receipt does not extend the current chain.', {
+        receiptId: record.receiptId,
+        expectedSequence: index.receipts.length + 1,
+        actualSequence: record.sequence
+      });
+    }
+  }
   function readRecord(tenant, receiptId) {
     const id = receiptIdentifier(receiptId);
     try {
@@ -264,6 +296,7 @@ export function createEvidenceAssuranceReceiptStore({
           || record.tenantId !== tenant || recordHash !== sha256(stableStringify(body))) {
         throw new EvidenceAssuranceReceiptIntegrityError('The assurance receipt record identity is invalid.', { receiptId: id });
       }
+      assertStoredSignature(record);
       return record;
     } catch (error) {
       if (error instanceof EvidenceAssuranceReceiptIntegrityError) throw error;
@@ -287,6 +320,7 @@ export function createEvidenceAssuranceReceiptStore({
       fsyncDirectory(dirname(path));
     } catch (error) {
       if (descriptor !== null) try { closeSync(descriptor); } catch {}
+      if (created && !committed) try { rmSync(path, { force: true }); } catch {}
       if (error?.code === 'EEXIST') throw new EvidenceAssuranceReceiptIntegrityError('A conflicting delivery receipt already exists.', { receiptId });
       throw new EvidenceAssuranceReceiptStoreError('The delivery receipt could not be committed.', { receiptId, created, committed }, error);
     }
