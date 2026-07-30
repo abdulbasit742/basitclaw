@@ -42,6 +42,9 @@ await requireMarkers('src/evidence/externalScanManagementHandler.js', 'External 
   'governance:read', 'authFailure', 'external-scan-management'
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'Composed evidence runtime', [
+  'createEvidenceDisclosureAwareApp'
+]);
+await requireMarkers('src/evidence/evidenceDisclosureServer.js', 'Disclosure runtime composition', [
   'createEvidenceTimeAttestationAwareApp'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-attestation runtime composition', [
