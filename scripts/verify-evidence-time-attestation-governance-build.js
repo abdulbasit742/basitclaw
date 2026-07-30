@@ -14,9 +14,7 @@ for (const file of requiredFiles) await access(new URL(`../${file}`, import.meta
 
 async function requireMarkers(path, label, markers) {
   const content = await readFile(new URL(`../${path}`, import.meta.url), 'utf8');
-  for (const marker of markers) {
-    if (!content.includes(marker)) throw new Error(`${label} build verification failed: missing ${marker}.`);
-  }
+  for (const marker of markers) if (!content.includes(marker)) throw new Error(`${label} build verification failed: missing ${marker}.`);
 }
 
 await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceStore.js', 'Notary governance journal', [
@@ -42,15 +40,15 @@ await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceHandler.js',
   'EVIDENCE_TIME_ATTESTATION_GOVERNANCE_BUSY'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationGovernanceServer.js', 'Notary governance runtime', [
-  'createEvidenceTimeAttestationAwareApp',
-  'notaryGovernanceAuthenticationGateway',
+  'createEvidenceTimeAttestationAwareApp', 'notaryGovernanceAuthenticationGateway',
   "permission === 'evidence:notary-govern' ? 'evidence:preserve'",
-  'evidenceTimeAttestationGovernanceHandler',
-  'resilienceScheduler'
+  'evidenceTimeAttestationGovernanceHandler', 'resilienceScheduler'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Outermost evidence runtime', [
-  'createEvidenceTimeAttestationGovernanceAwareApp'
+await requireMarkers('src/evidence/evidenceAssuranceBundleServer.js', 'Governance outer composition', [
+  'createEvidenceTimeAttestationGovernanceAwareApp',
+  'evidenceTimeAttestationGovernanceHandler'
 ]);
+await requireMarkers('src/evidenceRuntime.js', 'Outermost evidence runtime', ['createEvidenceAssuranceBundleAwareApp']);
 await requireMarkers('test/evidenceTimeAttestationGovernance.test.js', 'Notary governance regressions', [
   'prospective provider revocation preserves earlier proof',
   'retroactive key compromise excludes historical attestations',
@@ -59,9 +57,8 @@ await requireMarkers('test/evidenceTimeAttestationGovernance.test.js', 'Notary g
   'manager-only preservation permission'
 ]);
 await requireMarkers('docs/evidence-time-attestation-governance.md', 'Notary governance runbook', [
-  'Cryptographically valid', 'Operationally acceptable',
-  'No undo or deletion', 'retroactive: true',
-  'EVIDENCE_TIME_ATTESTATION_GOVERNANCE_REQUIRED',
+  'Cryptographically valid', 'Operationally acceptable', 'No undo or deletion',
+  'retroactive: true', 'EVIDENCE_TIME_ATTESTATION_GOVERNANCE_REQUIRED',
   'does not establish an authority'
 ]);
 await requireMarkers('config/evidence-screening.production.env.example', 'Production notary governance configuration', [
@@ -71,5 +68,4 @@ await requireMarkers('config/evidence-screening.production.env.example', 'Produc
   'WORKFORCE_AUDIT_EVIDENCE_NOTARY_GOVERNANCE_SIGNING_SECRETS=',
   'WORKFORCE_AUDIT_EVIDENCE_NOTARY_GOVERNANCE_MAX_EVENTS=100000'
 ]);
-
 console.log('Evidence time-attestation governance build verification passed.');
