@@ -74,7 +74,7 @@ await requireMarkers('test/evidenceDisclosureHttp.test.js', 'Disclosure HTTP tes
 ]);
 await requireMarkers('docs/evidence-disclosures.md', 'Disclosure runbook', [
   'does not email evidence',
-  'Requester/approver separation',
+  'requester/approver separation',
   'RSA-OAEP',
   'AES-256-GCM',
   'recipient private keys',
