@@ -42,6 +42,9 @@ await requireMarkers('src/evidence/externalScanManagementHandler.js', 'External 
   'governance:read', 'authFailure', 'external-scan-management'
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'Composed evidence runtime', [
+  'createEvidenceVerificationBundleAwareApp'
+]);
+await requireMarkers('src/evidence/evidenceVerificationBundleServer.js', 'Portable bundle runtime composition', [
   'createEvidenceTimeAttestationAwareApp'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-attestation runtime composition', [
