@@ -36,7 +36,8 @@ await requireMarkers('src/regulatory/regulatoryCaseHandler.js', 'Regulatory case
   'approve-response', 'submit-response'
 ]);
 await requireMarkers('src/regulatory/regulatoryCaseServer.js', 'Regulatory runtime', [
-  'createEvidenceTimeAttestationGovernanceAwareApp',
+  'createEvidenceAssuranceBundleAwareApp',
+  'evidenceAssuranceBundleHandler',
   'createRegulatoryAuthenticationGateway',
   "'backup:restore'", "'governance:read'",
   'regulatoryCaseHandler', 'resilienceScheduler'
