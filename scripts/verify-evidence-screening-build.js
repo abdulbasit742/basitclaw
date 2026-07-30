@@ -29,7 +29,10 @@ await requireMarkers('src/evidence/evidenceHandler.js', 'Screening API', [
   '/screening', 'screeningEvents', 'releaseQuarantine',
   'rejectQuarantine', 'evidence.quarantine_released'
 ]);
-await requireMarkers('src/evidenceRuntime.js', 'Composed evidence runtime', [
+await requireMarkers('src/evidenceRuntime.js', 'Outermost audit runtime', [
+  'createAuditTestProgrammeAwareApp'
+]);
+await requireMarkers('src/auditTestProgrammeServer.js', 'Test-programme runtime composition', [
   'createEvidenceTimeAttestationAwareApp'
 ]);
 await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-attestation runtime composition', [
