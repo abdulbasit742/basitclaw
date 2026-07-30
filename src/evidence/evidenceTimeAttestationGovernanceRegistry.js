@@ -89,7 +89,10 @@ export function createEvidenceTimeAttestationGovernanceRegistry({
     const cryptographic = registry.verifyEvidenceTimeAttestations(tenantId, archiveId);
     const attestations = registry.evidenceTimeAttestations(tenantId, archiveId, { limit: 5000 });
     const evaluation = governance.evaluate(tenantId, attestations, at ? { at } : {});
-    const acceptable = attestations.filter((attestation) => evaluation.decisions.get(attestation.attestationId)?.operationallyAcceptable);
+    const policyCompliant = attestations.filter((attestation) => attestation.authorityPolicy?.trusted !== false);
+    const acceptable = policyCompliant.filter(
+      (attestation) => evaluation.decisions.get(attestation.attestationId)?.operationallyAcceptable
+    );
     const providerIds = [...new Set(acceptable.map((attestation) => attestation.providerId))].sort();
     const minimumProviders = registry.evidenceTimeAttestationStore.minimumProviders;
     return {
@@ -98,6 +101,9 @@ export function createEvidenceTimeAttestationGovernanceRegistry({
       governanceEnabled: governance.enabled,
       governanceEvaluatedAt: evaluation.evaluatedAt,
       governanceEventsConsidered: evaluation.eventsConsidered,
+      authorityPolicyEnforced: Boolean(registry.evidenceTimeAttestationStore.authorityPolicyEnabled),
+      policyCompliantAttestations: policyCompliant.length,
+      policyRejectedAttestations: attestations.length - policyCompliant.length,
       operationallyAcceptable: providerIds.length >= minimumProviders,
       operationalQuorumSatisfied: providerIds.length >= minimumProviders,
       acceptableAttestations: acceptable.length,
@@ -106,6 +112,7 @@ export function createEvidenceTimeAttestationGovernanceRegistry({
       rejectedAttestations: attestations.length - acceptable.length,
       attestationDecisions: attestations.map((attestation) => ({
         ...attestation,
+        authorityPolicy: attestation.authorityPolicy ?? { trusted: true, reason: null },
         governance: publicDecision(evaluation.decisions.get(attestation.attestationId))
       }))
     };
@@ -146,7 +153,8 @@ export function createEvidenceTimeAttestationGovernanceRegistry({
             archiveId: receipt.archiveId,
             acceptableDistinctProviders: verification.acceptableDistinctProviders,
             minimumProviders: verification.minimumProviders,
-            rejectedAttestations: verification.rejectedAttestations
+            rejectedAttestations: verification.rejectedAttestations,
+            policyRejectedAttestations: verification.policyRejectedAttestations
           });
         }
       }
@@ -170,9 +178,15 @@ export function createEvidenceTimeAttestationGovernanceRegistry({
     let acceptableAttestations = 0;
     let revokedAttestations = 0;
     let supersededAttestations = 0;
-    for (const decision of evaluation.decisions.values()) {
-      if (decision.operationallyAcceptable) acceptableAttestations += 1;
-      else if (decision.status === 'superseded') supersededAttestations += 1;
+    let policyRejectedAttestations = 0;
+    for (const attestation of recent) {
+      if (attestation.authorityPolicy?.trusted === false) {
+        policyRejectedAttestations += 1;
+        continue;
+      }
+      const decision = evaluation.decisions.get(attestation.attestationId);
+      if (decision?.operationallyAcceptable) acceptableAttestations += 1;
+      else if (decision?.status === 'superseded') supersededAttestations += 1;
       else revokedAttestations += 1;
     }
     return {
@@ -180,6 +194,7 @@ export function createEvidenceTimeAttestationGovernanceRegistry({
       cryptographic: base,
       evaluatedAttestations: recent.length,
       acceptableAttestations,
+      policyRejectedAttestations,
       revokedAttestations,
       supersededAttestations,
       totalVersions: posture.totalVersions,

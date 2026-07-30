@@ -1,6 +1,7 @@
 import { sha256 } from './evidenceCrypto.js';
 import { EvidenceConflictError } from './evidenceRegistry.js';
 import { createEvidencePreservationRegistryFromEnvironment } from './evidencePreservationRegistry.js';
+import { createEvidenceTimeAuthorityPolicyStoreFromEnvironment } from './evidenceTimeAuthorityPolicyStore.js';
 import {
   EvidenceTimeAttestationRequiredError,
   createEvidenceTimeAttestationStore,
@@ -193,7 +194,11 @@ export function createEvidenceTimeAttestationRegistryFromEnvironment(env = proce
     const verified = registry.verifyEvidencePreservation(tenantId, archiveId);
     return challengeFromVerification(tenantId, verified);
   };
-  const timeAttestations = createEvidenceTimeAttestationStoreFromEnvironment({ env, resolveChallenge });
+  const baseTimeAttestations = createEvidenceTimeAttestationStoreFromEnvironment({ env, resolveChallenge });
+  const timeAttestations = createEvidenceTimeAuthorityPolicyStoreFromEnvironment({
+    store: baseTimeAttestations,
+    env
+  });
   return createEvidenceTimeAttestationRegistry({ registry, timeAttestations });
 }
 
