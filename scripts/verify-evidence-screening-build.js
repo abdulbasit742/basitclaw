@@ -7,7 +7,6 @@ const requiredFiles = [
   'test/evidenceScreeningRegistry.test.js',
   'docs/evidence-screening.md'
 ];
-
 for (const file of requiredFiles) await access(new URL(`../${file}`, import.meta.url));
 
 async function requireMarkers(path, label, markers) {
@@ -18,29 +17,22 @@ async function requireMarkers(path, label, markers) {
 }
 
 await requireMarkers('src/evidence/evidenceScreeningEngine.js', 'Screening engine', [
-  'MALWARE_EICAR_TEST_SIGNATURE',
-  'DLP_PRIVATE_KEY_MATERIAL',
-  'CONTENT_TYPE_EXTENSION_MISMATCH',
-  'CONTAINER_REQUIRES_DEEP_SCAN',
-  'wouldQuarantine',
-  'WORKFORCE_AUDIT_EVIDENCE_SCREENING_MODE'
+  'MALWARE_EICAR_TEST_SIGNATURE', 'DLP_PRIVATE_KEY_MATERIAL',
+  'CONTENT_TYPE_EXTENSION_MISMATCH', 'CONTAINER_REQUIRES_DEEP_SCAN',
+  'wouldQuarantine', 'WORKFORCE_AUDIT_EVIDENCE_SCREENING_MODE'
 ]);
 await requireMarkers('src/evidence/evidenceScreeningRegistry.js', 'Screening registry', [
-  'encryptEvidenceJson',
-  'EVIDENCE_QUARANTINED',
-  'RELEASE QUARANTINE',
-  'REJECT EVIDENCE',
-  'screening.quarantine_released',
-  'assertVersionAccessible'
+  'encryptEvidenceJson', 'EVIDENCE_QUARANTINED', 'RELEASE QUARANTINE',
+  'REJECT EVIDENCE', 'screening.quarantine_released', 'assertVersionAccessible'
 ]);
 await requireMarkers('src/evidence/evidenceHandler.js', 'Screening API', [
-  '/screening',
-  'screeningEvents',
-  'releaseQuarantine',
-  'rejectQuarantine',
-  'evidence.quarantine_released'
+  '/screening', 'screeningEvents', 'releaseQuarantine',
+  'rejectQuarantine', 'evidence.quarantine_released'
 ]);
 await requireMarkers('src/evidenceRuntime.js', 'Composed evidence runtime', [
+  'createEvidenceTimeAttestationAwareApp'
+]);
+await requireMarkers('src/evidence/evidenceTimeAttestationServer.js', 'Time-attestation runtime composition', [
   'createEvidencePreservationAwareApp'
 ]);
 await requireMarkers('src/evidence/evidencePreservationServer.js', 'Preservation runtime composition', [
@@ -50,16 +42,11 @@ await requireMarkers('src/evidence/externalScanEvidenceRegistry.js', 'Composed s
   'createScreenedEvidenceRegistryFromEnvironment'
 ]);
 await requireMarkers('docs/evidence-screening.md', 'Screening runbook', [
-  'quarantine',
-  'RELEASE QUARANTINE',
-  'REJECT EVIDENCE',
-  'false-positive',
-  'external antivirus'
+  'quarantine', 'RELEASE QUARANTINE', 'REJECT EVIDENCE',
+  'false-positive', 'external antivirus'
 ]);
 await requireMarkers('public/workforce-audit.html', 'Screening dashboard', [
-  'Evidence quarantine',
-  'Rejected evidence',
-  'Screening reports'
+  'Evidence quarantine', 'Rejected evidence', 'Screening reports'
 ]);
 
 console.log('Evidence screening build verification passed.');
