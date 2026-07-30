@@ -66,7 +66,7 @@ await requireMarkers('test/evidenceAssuranceReceiptIntegration.test.js', 'Receip
   'receipt journal commit survives an interrupted bundle update'
 ]);
 await requireMarkers('docs/assurance-delivery-receipts.md', 'Receipt runbook', [
-  'committed before the sealed package is removed',
+  'commits the signed receipt to an encrypted append-only journal before',
   'basitclaw-assurance-delivery-receipt-v1',
   'RSA-PSS-SHA256',
   'There is no receipt deletion API',
