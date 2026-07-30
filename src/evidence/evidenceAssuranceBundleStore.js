@@ -36,6 +36,10 @@ import {
   EvidenceStoreError,
   EvidenceValidationError
 } from './evidenceRegistry.js';
+import {
+  createEvidenceAssuranceReceiptStore,
+  createEvidenceAssuranceReceiptStoreFromEnvironment
+} from './evidenceAssuranceReceiptStore.js';
 
 const FORMAT = 'basitclaw-assurance-bundle-record';
 const PACKAGE_FORMAT = 'basitclaw-assurance-bundle-package';
@@ -53,7 +57,6 @@ export class EvidenceAssuranceBundleStoreError extends EvidenceStoreError {
     this.code = 'EVIDENCE_ASSURANCE_BUNDLE_STORE_UNAVAILABLE';
   }
 }
-
 export class EvidenceAssuranceBundleAuthenticationError extends EvidenceConflictError {
   constructor(message = 'The assurance recipient request could not be authenticated.', details = {}) {
     super(message, details);
@@ -70,6 +73,7 @@ export function createEvidenceAssuranceBundleStore({
   encryptionKeys,
   encryptionPrimaryKeyId,
   recipients = {},
+  deliveryReceipts = createEvidenceAssuranceReceiptStore({ mode: 'disabled' }),
   bundleTtlMinutes = 1440,
   claimLeaseMs = DEFAULT_CLAIM_LEASE_MS,
   maximumClaimBytes = 25_000_000,
@@ -85,6 +89,7 @@ export function createEvidenceAssuranceBundleStore({
     return disabledStore();
   }
   if (!String(directory ?? '').trim()) throw new TypeError('An assurance bundle directory is required.');
+  if (!deliveryReceipts || typeof deliveryReceipts.verifyAndRecord !== 'function') throw new TypeError('An assurance delivery receipt store is required.');
   const root = resolve(String(directory));
   const encryption = parseEvidenceKeyring(encryptionKeys, encryptionPrimaryKeyId);
   const recipientMap = parseRecipients(recipients);
@@ -156,6 +161,8 @@ export function createEvidenceAssuranceBundleStore({
       claimExpiresAt: null,
       deliveredAt: null,
       packageSha256: sha256(stableStringify(sealedPackage)),
+      deliveryReceiptId: null,
+      deliveryReceiptRecordHash: null,
       sealedPackage
     };
   }
@@ -195,9 +202,7 @@ export function createEvidenceAssuranceBundleStore({
         const record = readRecord(path, auth.recipientId, bundleId);
         if (record.state !== 'pending') continue;
         const estimate = Buffer.byteLength(JSON.stringify(record.sealedPackage)) + 1024;
-        if (!selected.length && estimate > claimBytes) {
-          throw new EvidenceValidationError('The sealed assurance bundle exceeds the configured claim response limit.', { bundleId, maximumClaimBytes: claimBytes });
-        }
+        if (!selected.length && estimate > claimBytes) throw new EvidenceValidationError('The sealed assurance bundle exceeds the configured claim response limit.', { bundleId, maximumClaimBytes: claimBytes });
         if (responseBytes + estimate > claimBytes) break;
         const claimToken = randomBytes(32).toString('base64url');
         record.state = 'claimed';
@@ -218,11 +223,23 @@ export function createEvidenceAssuranceBundleStore({
     return lock.withLock(`assurance-bundles:${auth.recipientId}`, () => {
       registerReplay(auth);
       maintenanceLocked(auth.recipientId);
-      const input = parseStrictJson(bodyBytes, new Set(['claimToken', 'packageSha256']));
+      const input = parseStrictJson(bodyBytes, new Set(['claimToken', 'packageSha256', 'receipt']));
       const path = bundlePath(auth.recipientId, id);
       if (!existsSync(path)) throw new EvidenceValidationError('The assurance bundle was not found.', { bundleId: id });
       const record = readRecord(path, auth.recipientId, id);
-      if (record.state === 'delivered') return publicRecord(record);
+      if (record.state === 'delivered') {
+        if (input.receipt && deliveryReceipts.enabled) {
+          deliveryReceipts.verifyAndRecord({
+            tenantId: record.tenantId,
+            recipientId: record.recipientId,
+            bundleId: record.bundleId,
+            packageSha256: record.packageSha256,
+            claimedAt: record.claimedAt,
+            ...strictReceipt(input.receipt)
+          });
+        }
+        return publicRecord(record);
+      }
       if (record.state !== 'claimed' || !record.claimExpiresAt || new Date(record.claimExpiresAt) <= now()) {
         throw new EvidenceConflictError('The assurance bundle claim is not active.', { bundleId: id });
       }
@@ -230,10 +247,27 @@ export function createEvidenceAssuranceBundleStore({
       if (!safeEqual(tokenHash, record.claimTokenHash) || String(input.packageSha256 ?? '') !== record.packageSha256) {
         throw new EvidenceAssuranceBundleAuthenticationError('The assurance bundle claim proof is invalid.', { bundleId: id });
       }
+      if (deliveryReceipts.required && !input.receipt) {
+        throw new EvidenceValidationError('A recipient-signed delivery receipt is required.', { field: 'receipt' });
+      }
+      let receiptResult = null;
+      if (input.receipt) {
+        if (!deliveryReceipts.enabled) throw new EvidenceConflictError('Recipient-signed delivery receipts are disabled.');
+        receiptResult = deliveryReceipts.verifyAndRecord({
+          tenantId: record.tenantId,
+          recipientId: record.recipientId,
+          bundleId: record.bundleId,
+          packageSha256: record.packageSha256,
+          claimedAt: record.claimedAt,
+          ...strictReceipt(input.receipt)
+        });
+      }
       record.state = 'delivered';
       record.deliveredAt = now().toISOString();
       record.claimTokenHash = null;
       record.claimExpiresAt = null;
+      record.deliveryReceiptId = receiptResult?.receipt.receiptId ?? null;
+      record.deliveryReceiptRecordHash = receiptResult?.receipt.recordHash ?? null;
       record.sealedPackage = null;
       replaceRecord(path, record, auth.recipientId, id);
       pruneLocked(auth.recipientId);
@@ -242,22 +276,44 @@ export function createEvidenceAssuranceBundleStore({
   }
 
   function tenantStatus(tenantId) {
-    const rows = list(identifier(tenantId, 'tenantId'), { limit: 5000 });
-    const counts = { pending: 0, claimed: 0, delivered: 0, expired: 0 };
-    for (const row of rows) counts[row.state] = (counts[row.state] ?? 0) + 1;
-    return { status: counts.expired ? 'attention' : 'ready', enabled: true, required: isRequired, total: rows.length, ...counts };
+    const tenant = identifier(tenantId, 'tenantId');
+    const rows = list(tenant, { limit: 5000 });
+    const counts = { pending: 0, claimed: 0, delivered: 0, expired: 0, deliveredWithoutReceipt: 0 };
+    for (const row of rows) {
+      counts[row.state] = (counts[row.state] ?? 0) + 1;
+      if (row.state === 'delivered' && !row.deliveryReceiptId) counts.deliveredWithoutReceipt += 1;
+    }
+    const receipts = deliveryReceipts.tenantStatus(tenant);
+    const unavailable = deliveryReceipts.required && receipts.status !== 'ready';
+    return {
+      status: unavailable || counts.deliveredWithoutReceipt && deliveryReceipts.required ? 'unavailable' : counts.expired ? 'attention' : 'ready',
+      enabled: true,
+      required: isRequired,
+      total: rows.length,
+      ...counts,
+      deliveryReceipts: receipts
+    };
   }
 
   function health() {
     try {
       mkdirSync(root, { recursive: true, mode: 0o700 });
+      const receipts = deliveryReceipts.health();
       return {
-        status: 'ready', enabled: true, required: isRequired,
+        status: deliveryReceipts.required && receipts.status !== 'ready' ? 'unavailable' : 'ready',
+        enabled: true,
+        required: isRequired,
         mode: 'recipient-pull-sealed-assurance-bundles',
-        encryptedRecords: true, recipientEncryptedPackages: true,
-        plaintextPersistence: false, arbitraryOutboundEgress: false,
-        recipientCount: recipientMap.size, bundleTtlMinutes: ttlMs / 60_000,
-        claimLeaseMs: leaseMs, maximumClaimBytes: claimBytes, mutex: lock.health()
+        encryptedRecords: true,
+        recipientEncryptedPackages: true,
+        plaintextPersistence: false,
+        arbitraryOutboundEgress: false,
+        recipientCount: recipientMap.size,
+        bundleTtlMinutes: ttlMs / 60_000,
+        claimLeaseMs: leaseMs,
+        maximumClaimBytes: claimBytes,
+        deliveryReceipts: receipts,
+        mutex: lock.health()
       };
     } catch (error) {
       return { status: 'unavailable', enabled: true, required: isRequired, error: error?.code ?? 'assurance_bundle_store_unavailable' };
@@ -272,9 +328,7 @@ export function createEvidenceAssuranceBundleStore({
     const recipient = recipientMap.get(recipientId);
     const secret = recipient?.hmacKeys.get(keyId);
     if (!secret) throw new EvidenceAssuranceBundleAuthenticationError();
-    if (Math.abs(now().getTime() - new Date(timestamp).getTime()) > skewMs) {
-      throw new EvidenceAssuranceBundleAuthenticationError('The assurance recipient timestamp is outside the accepted window.', { reason: 'timestamp_window' });
-    }
+    if (Math.abs(now().getTime() - new Date(timestamp).getTime()) > skewMs) throw new EvidenceAssuranceBundleAuthenticationError('The assurance recipient timestamp is outside the accepted window.', { reason: 'timestamp_window' });
     const canonical = [recipientId, keyId, operation, timestamp, nonce, sha256(bodyBytes)].join('\n');
     const expected = createHmac('sha256', secret).update(canonical).digest();
     let supplied;
@@ -320,7 +374,6 @@ export function createEvidenceAssuranceBundleStore({
       }
     }
   }
-
   function pruneLocked(recipientId) {
     const terminal = bundleNames(recipientId).map((filename) => {
       const id = filename.slice(0, -7); const path = bundlePath(recipientId, id); return { path, record: readRecord(path, recipientId, id) };
@@ -343,7 +396,6 @@ export function createEvidenceAssuranceBundleStore({
       throw new EvidenceAssuranceBundleStoreError('The assurance bundle could not be committed.', { bundleId }, error);
     }
   }
-
   function replaceRecord(path, record, recipientId, bundleId) {
     const envelope = encryptEvidenceJson(record, encryption, recordAad(recipientId, bundleId));
     const temporary = `${path}.${randomUUID()}.tmp`; let descriptor = null;
@@ -355,7 +407,6 @@ export function createEvidenceAssuranceBundleStore({
       throw new EvidenceAssuranceBundleStoreError('The assurance bundle state could not be updated.', { bundleId }, error);
     }
   }
-
   function readRecord(path, recipientId, bundleId) {
     try {
       const record = decryptEvidenceJson(readEvidenceJson(path), encryption, recordAad(recipientId, bundleId), EvidenceIntegrityError);
@@ -374,9 +425,18 @@ export function createEvidenceAssuranceBundleStore({
   function bundleNames(recipientId) { return readdirSync(recipientRoot(recipientId)).filter((name) => name.endsWith('.bundle') && BUNDLE_ID.test(name.slice(0, -7))).sort(); }
 
   return Object.freeze({
-    mode: selectedMode, enabled: true, required: isRequired, bundleTtlMs: ttlMs,
-    queue, list, claimSigned, acknowledgeSigned, tenantStatus, health,
-    recipientIds: () => [...recipientMap.keys()]
+    mode: selectedMode,
+    enabled: true,
+    required: isRequired,
+    bundleTtlMs: ttlMs,
+    queue,
+    list,
+    claimSigned,
+    acknowledgeSigned,
+    tenantStatus,
+    health,
+    recipientIds: () => [...recipientMap.keys()],
+    deliveryReceiptStore: deliveryReceipts
   });
 }
 
@@ -391,11 +451,14 @@ export function createEvidenceAssuranceBundleStoreFromEnvironment({ env = proces
   if (!primaryKeyId) throw new EvidenceAssuranceBundleStoreError('The assurance bundle primary key ID is required.', { reason: 'missing_bundle_primary_key_id' });
   if (!recipientsRaw) throw new EvidenceAssuranceBundleStoreError('Assurance recipient configuration is required.', { reason: 'missing_recipients' });
   try {
+    const deliveryReceipts = createEvidenceAssuranceReceiptStoreFromEnvironment({ env });
     return createEvidenceAssuranceBundleStore({
       mode, required,
       directory: envValue(env.WORKFORCE_AUDIT_ASSURANCE_BUNDLE_DIR),
-      encryptionKeys: JSON.parse(keysRaw), encryptionPrimaryKeyId: primaryKeyId,
+      encryptionKeys: JSON.parse(keysRaw),
+      encryptionPrimaryKeyId: primaryKeyId,
       recipients: JSON.parse(recipientsRaw),
+      deliveryReceipts,
       bundleTtlMinutes: envValue(env.WORKFORCE_AUDIT_ASSURANCE_BUNDLE_TTL_MINUTES) ?? 1440,
       claimLeaseMs: envValue(env.WORKFORCE_AUDIT_ASSURANCE_BUNDLE_CLAIM_LEASE_MS) ?? DEFAULT_CLAIM_LEASE_MS,
       maximumClaimBytes: envValue(env.WORKFORCE_AUDIT_ASSURANCE_BUNDLE_MAX_CLAIM_BYTES) ?? 25_000_000,
@@ -422,11 +485,18 @@ function sealForRecipient(payload, recipient, bundleId) {
   const wrappedKey = publicEncrypt({ key: publicKey, oaepHash: 'sha256', padding: constants.RSA_PKCS1_OAEP_PADDING }, contentKey);
   contentKey.fill(0);
   return {
-    format: SEALED_FORMAT, version: 1, algorithm: 'RSA-OAEP-SHA256+A256GCM', recipientPublicKeyId,
-    iv: iv.toString('base64'), tag: tag.toString('base64'), aad: aad.toString('base64'), wrappedKey: wrappedKey.toString('base64'), ciphertext: ciphertext.toString('base64'), plaintextSha256: sha256(plaintext)
+    format: SEALED_FORMAT,
+    version: 1,
+    algorithm: 'RSA-OAEP-SHA256+A256GCM',
+    recipientPublicKeyId,
+    iv: iv.toString('base64'),
+    tag: tag.toString('base64'),
+    aad: aad.toString('base64'),
+    wrappedKey: wrappedKey.toString('base64'),
+    ciphertext: ciphertext.toString('base64'),
+    plaintextSha256: sha256(plaintext)
   };
 }
-
 function validateQueueInput(input, recipients, now, ttlMs) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new EvidenceValidationError('A valid assurance bundle request is required.');
   const tenantId = identifier(input.tenantId, 'tenantId');
@@ -442,28 +512,54 @@ function validateQueueInput(input, recipients, now, ttlMs) {
   const created = now();
   return { tenantId, evidenceId, evidenceVersion, contentSha256, recipientId, requestedBy, purpose, manifest: structuredClone(input.manifest), evidence: structuredClone(input.evidence), createdAt: created.toISOString(), expiresAt: new Date(created.getTime() + ttlMs).toISOString() };
 }
-
 function parseRecipients(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new TypeError('Assurance recipients must be an object.');
-  const entries = Object.entries(raw); if (entries.length > 100) throw new TypeError('No more than 100 assurance recipients are supported.');
+  const entries = Object.entries(raw);
+  if (entries.length > 100) throw new TypeError('No more than 100 assurance recipients are supported.');
   const result = new Map();
   for (const [recipientId, value] of entries) {
     identifier(recipientId, 'recipientId');
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`Assurance recipient ${recipientId} must be an object.`);
-    const hmacEntries = Object.entries(value.keys ?? {}); if (!hmacEntries.length) throw new TypeError(`Assurance recipient ${recipientId} needs at least one HMAC key.`);
-    const hmacKeys = new Map(hmacEntries.map(([keyId, encoded]) => { keyIdentifier(keyId); const secret = strictBase64(encoded, `recipient secret ${recipientId}/${keyId}`); if (secret.length < 32 || secret.length > 128) throw new TypeError(`Assurance recipient ${recipientId} HMAC keys must decode to 32 to 128 bytes.`); return [keyId, secret]; }));
-    const publicEntries = Object.entries(value.publicKeys ?? {}); if (!publicEntries.length) throw new TypeError(`Assurance recipient ${recipientId} needs at least one RSA public key.`);
-    const publicKeys = new Map(publicEntries.map(([keyId, pem]) => { keyIdentifier(keyId); const key = createPublicKey(String(pem)); if (key.asymmetricKeyType !== 'rsa') throw new TypeError(`Assurance recipient ${recipientId} public key ${keyId} must be RSA.`); if ((key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) throw new TypeError(`Assurance recipient ${recipientId} RSA key ${keyId} must be at least 2048 bits.`); return [keyId, key]; }));
-    const primaryPublicKeyId = keyIdentifier(value.primaryPublicKeyId ?? publicEntries[0][0]); if (!publicKeys.has(primaryPublicKeyId)) throw new TypeError(`Assurance recipient ${recipientId} primary public key is unavailable.`);
+    const hmacEntries = Object.entries(value.keys ?? {});
+    if (!hmacEntries.length) throw new TypeError(`Assurance recipient ${recipientId} needs at least one HMAC key.`);
+    const hmacKeys = new Map(hmacEntries.map(([keyId, encoded]) => {
+      keyIdentifier(keyId);
+      const secret = strictBase64(encoded, `recipient secret ${recipientId}/${keyId}`);
+      if (secret.length < 32 || secret.length > 128) throw new TypeError(`Assurance recipient ${recipientId} HMAC keys must decode to 32 to 128 bytes.`);
+      return [keyId, secret];
+    }));
+    const publicEntries = Object.entries(value.publicKeys ?? {});
+    if (!publicEntries.length) throw new TypeError(`Assurance recipient ${recipientId} needs at least one RSA public key.`);
+    const publicKeys = new Map(publicEntries.map(([keyId, pem]) => {
+      keyIdentifier(keyId);
+      const key = createPublicKey(String(pem));
+      if (key.asymmetricKeyType !== 'rsa') throw new TypeError(`Assurance recipient ${recipientId} public key ${keyId} must be RSA.`);
+      if ((key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) throw new TypeError(`Assurance recipient ${recipientId} RSA key ${keyId} must be at least 2048 bits.`);
+      return [keyId, key];
+    }));
+    const primaryPublicKeyId = keyIdentifier(value.primaryPublicKeyId ?? publicEntries[0][0]);
+    if (!publicKeys.has(primaryPublicKeyId)) throw new TypeError(`Assurance recipient ${recipientId} primary public key is unavailable.`);
     result.set(recipientId, Object.freeze({ hmacKeys, publicKeys, primaryPublicKeyId }));
   }
   return result;
 }
-
-function parseStrictJson(bytes, allowed) { let input; try { input = JSON.parse(Buffer.from(bytes).toString('utf8') || '{}'); } catch { throw new EvidenceValidationError('The assurance recipient request must contain valid JSON.', { field: 'body' }); } if (!input || typeof input !== 'object' || Array.isArray(input)) throw new EvidenceValidationError('The assurance recipient request body must be an object.', { field: 'body' }); for (const key of Object.keys(input)) if (!allowed.has(key)) throw new EvidenceValidationError(`Unsupported assurance recipient field ${key}.`, { field: key }); return input; }
+function strictReceipt(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new EvidenceValidationError('receipt must be an object.', { field: 'receipt' });
+  const allowed = new Set(['receivedAt', 'keyId', 'signature']);
+  for (const key of Object.keys(input)) if (!allowed.has(key)) throw new EvidenceValidationError(`Unsupported delivery receipt field ${key}.`, { field: `receipt.${key}` });
+  return { receivedAt: input.receivedAt, keyId: input.keyId, signature: input.signature };
+}
+function parseStrictJson(bytes, allowed) {
+  let input;
+  try { input = JSON.parse(Buffer.from(bytes).toString('utf8') || '{}'); }
+  catch { throw new EvidenceValidationError('The assurance recipient request must contain valid JSON.', { field: 'body' }); }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new EvidenceValidationError('The assurance recipient request body must be an object.', { field: 'body' });
+  for (const key of Object.keys(input)) if (!allowed.has(key)) throw new EvidenceValidationError(`Unsupported assurance recipient field ${key}.`, { field: key });
+  return input;
+}
 function bundleIdFor(input) { return `ASB-${sha256([input.tenantId, input.evidenceId, String(input.evidenceVersion), input.contentSha256, input.recipientId, input.manifest.bundleDigest].join('|')).slice(0, 32)}`; }
 function assertSameBundle(record, input) { if (record.tenantId !== input.tenantId || record.evidenceId !== input.evidenceId || record.evidenceVersion !== input.evidenceVersion || record.contentSha256 !== input.contentSha256 || record.recipientId !== input.recipientId) throw new EvidenceIntegrityError('An existing assurance bundle conflicts with this request.', { bundleId: record.bundleId }); }
-function publicRecord(record) { return { bundleId: record.bundleId, evidenceId: record.evidenceId, evidenceVersion: record.evidenceVersion, contentSha256: record.contentSha256, recipientId: record.recipientId, recipientPublicKeyId: record.recipientPublicKeyId, purpose: record.purpose, requestedBy: record.requestedBy, createdAt: record.createdAt, expiresAt: record.expiresAt, state: record.state, claimedAt: record.claimedAt, claimExpiresAt: record.claimExpiresAt, deliveredAt: record.deliveredAt, packageSha256: record.packageSha256 }; }
+function publicRecord(record) { return { bundleId: record.bundleId, evidenceId: record.evidenceId, evidenceVersion: record.evidenceVersion, contentSha256: record.contentSha256, recipientId: record.recipientId, recipientPublicKeyId: record.recipientPublicKeyId, purpose: record.purpose, requestedBy: record.requestedBy, createdAt: record.createdAt, expiresAt: record.expiresAt, state: record.state, claimedAt: record.claimedAt, claimExpiresAt: record.claimExpiresAt, deliveredAt: record.deliveredAt, packageSha256: record.packageSha256, deliveryReceiptId: record.deliveryReceiptId ?? null, deliveryReceiptRecordHash: record.deliveryReceiptRecordHash ?? null }; }
 function recordAad(recipientId, bundleId) { return `basitclaw:assurance-bundle-record:${recipientId}:${bundleId}`; }
 function fsyncDirectory(path) { const descriptor = openSync(path, 'r'); try { fsyncSync(descriptor); } finally { closeSync(descriptor); } }
 function safeEqual(left, right) { if (!left || !right) return false; const a = Buffer.from(left); const b = Buffer.from(right); return a.length === b.length && timingSafeEqual(a, b); }
@@ -482,4 +578,4 @@ function enumValue(value, allowed, field) { const text = String(value ?? ''); if
 function booleanValue(value, field) { if (typeof value !== 'boolean') throw new TypeError(`${field} must be true or false.`); return value; }
 function parseBoolean(value) { if (typeof value === 'boolean') return value; if (value === 'true') return true; if (value === 'false') return false; throw new TypeError('Boolean environment values must be true or false.'); }
 function envValue(value) { const clean = typeof value === 'string' ? value.trim() : value; return clean === '' || clean === undefined || clean === null ? undefined : clean; }
-function disabledStore() { const status = Object.freeze({ status: 'disabled', enabled: false, required: false, mode: 'disabled' }); return Object.freeze({ mode: 'disabled', enabled: false, required: false, bundleTtlMs: 0, queue() { throw new EvidenceConflictError('Assurance bundle delivery is disabled.'); }, list() { return []; }, claimSigned() { throw new EvidenceConflictError('Assurance bundle delivery is disabled.'); }, acknowledgeSigned() { throw new EvidenceConflictError('Assurance bundle delivery is disabled.'); }, tenantStatus() { return status; }, health() { return status; }, recipientIds() { return []; } }); }
+function disabledStore() { const status = Object.freeze({ status: 'disabled', enabled: false, required: false, mode: 'disabled' }); return Object.freeze({ mode: 'disabled', enabled: false, required: false, bundleTtlMs: 0, queue() { throw new EvidenceConflictError('Assurance bundle delivery is disabled.'); }, list() { return []; }, claimSigned() { throw new EvidenceConflictError('Assurance bundle delivery is disabled.'); }, acknowledgeSigned() { throw new EvidenceConflictError('Assurance bundle delivery is disabled.'); }, tenantStatus() { return status; }, health() { return status; }, recipientIds() { return []; }, deliveryReceiptStore: createEvidenceAssuranceReceiptStore({ mode: 'disabled' }) }); }
