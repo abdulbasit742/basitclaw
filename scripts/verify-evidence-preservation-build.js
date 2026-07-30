@@ -71,7 +71,7 @@ await requireMarkers('docs/evidence-preservation.md', 'Evidence preservation run
   'retention extension',
   'PRESERVE EVD-',
   'does not make an ordinary filesystem WORM',
-  'fail-closed staging configuration',
+  'Fail-closed staging configuration',
   'Rollback removes only a file created by the current invocation',
   'no deletion endpoint'
 ]);
