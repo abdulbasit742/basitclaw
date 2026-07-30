@@ -16,6 +16,7 @@ export function createEvidenceAssuranceBundleRegistry({
     throw new TypeError('A governed time-attestation-aware evidence registry is required.');
   }
   if (!bundles || typeof bundles.queue !== 'function') throw new TypeError('An assurance bundle store is required.');
+  const receipts = bundles.deliveryReceiptStore;
 
   function createAssuranceBundle(tenantId, evidenceId, input = {}, context = {}) {
     if (!bundles.enabled) throw new EvidenceConflictError('Assurance bundle delivery is disabled.');
@@ -117,10 +118,14 @@ export function createEvidenceAssuranceBundleRegistry({
     if (evidenceId) registry.get(tenantId, evidenceId);
     return bundles.list(tenantId, { evidenceId, ...options });
   }
-
   function claimAssuranceBundles(body, headers) { return bundles.claimSigned(body, headers); }
   function acknowledgeAssuranceBundle(bundleId, body, headers) { return bundles.acknowledgeSigned(bundleId, body, headers); }
   function assuranceBundleStatus(tenantId) { return bundles.tenantStatus(tenantId); }
+  function assuranceDeliveryReceipts(tenantId, options = {}) { return receipts?.list?.(tenantId, options) ?? []; }
+  function assuranceDeliveryReceipt(tenantId, bundleId) { return receipts?.get?.(tenantId, bundleId) ?? null; }
+  function verifyAssuranceDeliveryReceipts(tenantId) {
+    return receipts?.verifyTenant?.(tenantId) ?? { valid: true, tenantId, checkedReceipts: 0, chainHead: null };
+  }
 
   function health() {
     const base = registry.health();
@@ -128,7 +133,7 @@ export function createEvidenceAssuranceBundleRegistry({
     const unavailable = bundles.required && delivery.status !== 'ready';
     return {
       ...base,
-      required: Boolean(base.required || bundles.required),
+      required: Boolean(base.required || bundles.required || receipts?.required),
       status: unavailable || base.status === 'unavailable' ? 'unavailable' : base.status,
       assuranceBundles: delivery
     };
@@ -161,8 +166,13 @@ export function createEvidenceAssuranceBundleRegistry({
     claimAssuranceBundles,
     acknowledgeAssuranceBundle,
     assuranceBundleStatus,
+    assuranceDeliveryReceipts,
+    assuranceDeliveryReceipt,
+    verifyAssuranceDeliveryReceipts,
     assuranceBundleEnabled: bundles.enabled,
-    assuranceBundleStore: bundles
+    assuranceBundleStore: bundles,
+    assuranceDeliveryReceiptEnabled: Boolean(receipts?.enabled),
+    assuranceDeliveryReceiptStore: receipts
   });
 }
 
