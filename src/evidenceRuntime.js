@@ -1,11 +1,11 @@
 import { fileURLToPath } from 'node:url';
 import { prepareEvidenceLifecycle } from './evidence/evidenceServer.js';
-import { createEvidenceAssuranceBundleAwareApp } from './evidence/evidenceAssuranceBundleServer.js';
+import { createRegulatoryCaseAwareApp } from './regulatory/regulatoryCaseServer.js';
 import { prepareIdentityLifecycle, prepareIdentityProvider } from './runtime.js';
 
 export async function startEvidenceRuntime({
   env = process.env,
-  app = createEvidenceAssuranceBundleAwareApp({ env }),
+  app = createRegulatoryCaseAwareApp({ env }),
   logger = console
 } = {}) {
   const identity = await prepareIdentityProvider({ authenticationGateway: app.authenticationGateway, env, logger });
