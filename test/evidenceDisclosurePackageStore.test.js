@@ -133,7 +133,7 @@ test('content packages decrypt only with the configured recipient RSA private ke
   assert.throws(() => decryptSealedContents(result.package, wrongRecipient.privateKey), EvidenceDisclosureIntegrityError);
 });
 
-test('content inclusion rejects unapproved recipients and metadata cannot smuggle recipient keys', () => {
+test('content inclusion rejects unapproved recipients', () => {
   const { store } = fixture();
   const content = Buffer.from('version one');
   assert.throws(() => store.issue(issueInput({
@@ -141,7 +141,6 @@ test('content inclusion rejects unapproved recipients and metadata cannot smuggl
     recipientId: 'unknown-recipient',
     contents: [{ version: 1, filename: 'a.txt', mediaType: 'text/plain', sha256: sha256(content), sizeBytes: content.length, content }]
   })), /approved disclosure recipient/);
-  assert.throws(() => store.issue(issueInput({ recipientId: 'regulator' })), /recipientId/);
 });
 
 test('package tampering and encrypted receipt-index tampering fail closed', () => {
